@@ -1,0 +1,6 @@
+package com.mina.yuedu.network;
+import java.util.*;
+public final class QueueStateTest {
+ private static void ok(boolean v,String m){if(!v)throw new AssertionError(m);}
+ public static void runAll(){final java.util.concurrent.atomic.AtomicInteger progress=new java.util.concurrent.atomic.AtomicInteger();final java.util.concurrent.CountDownLatch done=new java.util.concurrent.CountDownLatch(1);new FetchManager().start(java.util.Collections.<String>emptyList(),1,new FetchListener(){public void onProgress(FetchProgress p){progress.incrementAndGet();}public void onItem(String u,String b){}public void onFailure(String u,String m){}public void onFinished(boolean c,boolean k){done.countDown();}});try{done.await(2,java.util.concurrent.TimeUnit.SECONDS);}catch(Exception e){throw new AssertionError(e);}ok(progress.get()==1,"initial progress callback");FetchManager.QueueState q=new FetchManager.QueueState(Arrays.asList("a","b","c","d","e"),2);ok("a".equals(q.takeNext()),"first");ok("b".equals(q.takeNext()),"second");ok(q.getInFlight()==2,"bound");ok(q.takeNext()==null,"blocked");q.complete(true,10);ok("c".equals(q.takeNext()),"next");q.cancel(true);ok(q.takeNext()==null,"cancel");ok(q.shouldKeepLoaded(),"keep");}
+}

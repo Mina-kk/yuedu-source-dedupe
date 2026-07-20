@@ -1,0 +1,30 @@
+# Build output
+bin/
+dist/
+test-bin/
+*.apk
+*.idsig
+
+# Local Android/Java configuration
+local.properties
+.gradle/
+.idea/
+*.iml
+
+# Signing material and secrets
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local tooling
+.worktrees/
+.superpowers/
