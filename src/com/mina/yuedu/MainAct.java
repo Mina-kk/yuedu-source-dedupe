@@ -64,7 +64,7 @@ public class MainAct extends Activity implements DedupeController.Host {
             if (input != null) dedupe.setInputText(input);
             controller.restoreOptions(
                     (com.mina.yuedu.model.DedupeMode) b.getSerializable("mode"),
-                    b.getInt("concurrency", 4),
+                    b.getInt("concurrency", 2),
                     b.getBoolean("clean_names", false)
             );
             if ("yck".equals(b.getString("tab"))) showYck();
@@ -158,13 +158,24 @@ public class MainAct extends Activity implements DedupeController.Host {
         WebSettings s = yck.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
-        s.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setDatabaseEnabled(true);
+        s.setLoadWithOverviewMode(true);
+        s.setUseWideViewPort(true);
+        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setMediaPlaybackRequiresUserGesture(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
+        s.setUserAgentString(
+                "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
+                        + "(KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36"
+        );
+        CookieManager.getInstance().setAcceptCookie(true);
+        if (Build.VERSION.SDK_INT >= 21) {
+            CookieManager.getInstance().setAcceptThirdPartyCookies(yck, true);
+        }
         yck.addJavascriptInterface(new YckBridge(url -> collectYckUrl(url)), "YckDedupe");
         yckClient = new YckWebClient(new YckWebClient.Listener() {
             public void onJsonLink(String u) {
@@ -172,11 +183,11 @@ public class MainAct extends Activity implements DedupeController.Host {
             }
 
             public void onExternal(String u) {
-                Toast.makeText(MainAct.this, "已拦截非 YCK 页面", Toast.LENGTH_SHORT).show();
+                // Quietly ignore external navigations that are not useful for source collection.
             }
 
             public void onLoadError(String u) {
-                Toast.makeText(MainAct.this, "站点加载失败，请切换备用站", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainAct.this, "YCK 主页面加载失败，可切换备用站重试", Toast.LENGTH_SHORT).show();
             }
 
             public void onPageFinished(String u) {

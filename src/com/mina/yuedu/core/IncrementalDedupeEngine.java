@@ -3,7 +3,7 @@ import com.mina.yuedu.model.*;
 import java.util.*;
 
 public final class IncrementalDedupeEngine {
-    public static final int DEFAULT_DETAIL_LIMIT = 500;
+    public static final int DEFAULT_DETAIL_LIMIT = 200;
 
     private final DedupeMode mode;
     private final boolean cleanNames;
@@ -15,6 +15,7 @@ public final class IncrementalDedupeEngine {
     private int duplicateCount;
     private int detailOverflow;
     private int invalidOverflow;
+    private boolean released;
 
     public IncrementalDedupeEngine(DedupeMode mode, boolean cleanNames) {
         this(mode, cleanNames, DEFAULT_DETAIL_LIMIT);
@@ -27,6 +28,7 @@ public final class IncrementalDedupeEngine {
     }
 
     public void accept(SourceRecord source) {
+        ensureOpen();
         originalCount++;
         String url = source.getUrl();
         if (url == null) {
@@ -62,6 +64,7 @@ public final class IncrementalDedupeEngine {
     }
 
     public void addInvalid(InvalidSource source) {
+        ensureOpen();
         if (source == null) return;
         if (invalid.size() < detailLimit) invalid.add(source);
         else invalidOverflow++;
@@ -73,6 +76,7 @@ public final class IncrementalDedupeEngine {
     }
 
     public DedupeResult finish() {
+        ensureOpen();
         List<SourceRecord> retained = new ArrayList<>(winners.values());
         retained.sort(Comparator.comparingInt(SourceRecord::getOrder));
         return new DedupeResult(
@@ -86,8 +90,24 @@ public final class IncrementalDedupeEngine {
         );
     }
 
+    /** Drop internal maps/lists so GC can reclaim memory after result is taken. */
+    public void release() {
+        winners.clear();
+        groups.clear();
+        invalid.clear();
+        originalCount = 0;
+        duplicateCount = 0;
+        detailOverflow = 0;
+        invalidOverflow = 0;
+        released = true;
+    }
+
     public int getOriginalCount() {
         return originalCount;
+    }
+
+    private void ensureOpen() {
+        if (released) throw new IllegalStateException("engine released");
     }
 
     private void recordDuplicate(String key, SourceRecord kept, SourceRecord removed) {
@@ -96,7 +116,10 @@ public final class IncrementalDedupeEngine {
             detailOverflow++;
             return;
         }
-        groups.add(new DuplicateGroup(key, reason(mode), kept, Collections.singletonList(removed)));
+        // Keep detail lightweight: only names, avoid retaining full raw of removed source in UI path.
+        SourceRecord lightKept = kept.withName(kept.getName());
+        SourceRecord lightRemoved = removed.withName(removed.getName());
+        groups.add(new DuplicateGroup(key, reason(mode), lightKept, Collections.singletonList(lightRemoved)));
     }
 
     private static int score(SourceRecord s) {

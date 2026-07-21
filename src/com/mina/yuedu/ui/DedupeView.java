@@ -29,7 +29,7 @@ public final class DedupeView extends ScrollView {
     private final Button start, stop, importBtn, saveBtn;
     private final View runningCard;
     private DedupeMode mode = DedupeMode.STANDARD;
-    private int concurrency = 4, renderedGroups, renderedInvalid;
+    private int concurrency = 2, renderedGroups, renderedInvalid;
     private DedupeResult current;
 
     public DedupeView(Context c) {
@@ -92,7 +92,7 @@ public final class DedupeView extends ScrollView {
         input.addView(modeDescription);
 
         input.addView(label("并发请求"), lp(-1, -2, 0, 14, 0, 6));
-        input.addView(options(new String[]{"1", "2", "3", "4", "5"}, 3, i -> concurrency = i + 1), new LinearLayout.LayoutParams(-1, AppleStyles.dp(c, 42)));
+        input.addView(options(new String[]{"1", "2", "3", "4", "5"}, 1, i -> concurrency = i + 1), new LinearLayout.LayoutParams(-1, AppleStyles.dp(c, 42)));
 
         cleanSwitch = new Switch(c);
         cleanSwitch.setText("清理名称中的装饰符号");

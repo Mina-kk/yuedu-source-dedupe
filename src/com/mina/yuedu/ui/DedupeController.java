@@ -40,7 +40,7 @@ public final class DedupeController implements DedupeView.Listener {
     private DedupeResult result;
     private DedupeMode mode = DedupeMode.STANDARD;
     private boolean clean, partial, discard;
-    private int concurrency = 4, nextOrder, localCount, networkCount, localFileCount;
+    private int concurrency = 2, nextOrder, localCount, networkCount, localFileCount;
     private State state = State.IDLE;
     private volatile boolean cancelRequested;
 
@@ -62,7 +62,7 @@ public final class DedupeController implements DedupeView.Listener {
         operationMode.start();
         mode = operationMode.resultMode();
         clean = view.isCleanNames();
-        ensureEngine();
+        rebuildEngineForNewRun(false);
         view.showLocalImportProgress(0, uris.size(), 0);
 
         worker.execute(() -> {
@@ -117,7 +117,7 @@ public final class DedupeController implements DedupeView.Listener {
     }
 
     private void finishLocalImport(boolean completed) {
-        final DedupeResult done = engine.finish();
+        final DedupeResult done = takeResultAndReleaseEngine();
         final int files = localFileCount;
         final int local = localCount;
         main.post(() -> {
@@ -139,7 +139,7 @@ public final class DedupeController implements DedupeView.Listener {
         operationMode.select(m);
         operationMode.start();
         mode = operationMode.resultMode();
-        concurrency = c;
+        concurrency = Math.max(1, Math.min(5, c));
         clean = cl;
         partial = false;
         discard = false;
@@ -151,7 +151,8 @@ public final class DedupeController implements DedupeView.Listener {
         synchronized (discovered) {
             discovered.clear();
         }
-        ensureEngine();
+        // Always rebuild engine for a new parse run so second pass does not retain first-run maps.
+        rebuildEngineForNewRun(false);
         if (!ParseRequestDecision.shouldRun(localCount, urls.size())) {
             view.showError("请选择本地文件或输入网络地址");
             return;
@@ -172,6 +173,7 @@ public final class DedupeController implements DedupeView.Listener {
             }
 
             public void onItem(String url, String body) {
+                // Stream path is preferred; legacy body path is a fallback only.
                 worker.execute(() -> consumeNetworkBody(url, body));
             }
 
@@ -185,7 +187,7 @@ public final class DedupeController implements DedupeView.Listener {
                 worker.execute(() -> {
                     if (discard) {
                         discard = false;
-                        clearAllInternal(false);
+                        clearAllInternal(true);
                         main.post(() -> {
                             state = State.IDLE;
                             view.showCleared();
@@ -206,7 +208,56 @@ public final class DedupeController implements DedupeView.Listener {
                     publishCurrentResult(partial);
                 });
             }
-        });
+        }, (url, bodyStream) -> consumeNetworkStream(url, bodyStream));
+    }
+
+    private int consumeNetworkStream(String url, InputStream bodyStream) throws Exception {
+        ensureEngine();
+        final int[] added = {0};
+        PushbackInputStream pin = new PushbackInputStream(bodyStream, 8192);
+        int first = skipBomAndWs(pin);
+        if (first < 0) throw new IOException("empty body");
+        pin.unread(first);
+
+        if (first == '[') {
+            try (Reader reader = new BufferedReader(new InputStreamReader(pin, StandardCharsets.UTF_8), 65536)) {
+                SourceParser.parseArrayStream(reader, nextOrder, record -> {
+                    engine.accept(record);
+                    nextOrder = Math.max(nextOrder, record.getOrder() + 1);
+                    added[0]++;
+                    networkCount++;
+                }, invalid -> engine.addInvalid(invalid));
+            }
+            return added[0];
+        }
+
+        // Non-array: read a bounded snippet for YCK discovery / error reporting.
+        String snippet = readLimitedUtf8(pin, 512 * 1024);
+        List<String> found = SourceParser.discoverYckJsonUrls(snippet, url);
+        if (!found.isEmpty()) {
+            synchronized (discovered) {
+                discovered.addAll(found);
+            }
+            return 0;
+        }
+        // Maybe JSON object wrapper with downloadUrl.
+        try {
+            Object parsed = MiniJson.parse(snippet);
+            if (parsed instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> map = (Map<String, Object>) parsed;
+                String indirect = SourceParser.extractIndirectUrl(map);
+                if (indirect != null) {
+                    synchronized (discovered) {
+                        discovered.add(indirect);
+                    }
+                    return 0;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        engine.addInvalid(new InvalidSource(InvalidSource.Kind.NOT_JSON_ARRAY, url + " · not a JSON array"));
+        return 0;
     }
 
     private void consumeNetworkBody(String url, String body) {
@@ -246,13 +297,14 @@ public final class DedupeController implements DedupeView.Listener {
     }
 
     private void publishCurrentResult(boolean isPartial) {
-        ensureEngine();
-        final DedupeResult done = engine.finish();
+        final DedupeResult done = takeResultAndReleaseEngine();
         main.post(() -> {
             result = done;
             state = isPartial ? State.PARTIAL_RESULT : State.COMPLETED;
             view.showLocalStatus(localFileCount, localCount);
             view.showResult(result, isPartial, mode, localCount, networkCount);
+            // Encourage GC before a second large run.
+            System.gc();
         });
     }
 
@@ -286,7 +338,12 @@ public final class DedupeController implements DedupeView.Listener {
         localFileCount = 0;
         nextOrder = 0;
         result = null;
-        if (resetEngine) engine = null;
+        if (resetEngine) {
+            if (engine != null) {
+                try { engine.release(); } catch (Exception ignored) {}
+            }
+            engine = null;
+        }
     }
 
     @Override
@@ -353,7 +410,7 @@ public final class DedupeController implements DedupeView.Listener {
                 System.gc();
                 main.post(() -> view.showError("内存不足，导出失败"));
             } catch (Exception e) {
-                main.post(() -> view.showError("导入失败：" + e.getMessage()));
+                main.post(() -> view.showError("导入���败：" + e.getMessage()));
             }
         });
     }
@@ -386,6 +443,47 @@ public final class DedupeController implements DedupeView.Listener {
         });
     }
 
+    private void rebuildEngineForNewRun(boolean clearLocalCounters) {
+        List<SourceRecord> seed = null;
+        if (!clearLocalCounters && result != null && localCount > 0 && !result.getRetained().isEmpty()) {
+            // Preserve previously imported local sources into the new engine before network parse.
+            seed = new ArrayList<>(result.getRetained());
+        }
+        if (result != null) {
+            // Drop previous retained list so second run does not keep two full copies.
+            result = null;
+        }
+        if (engine != null) {
+            try { engine.release(); } catch (Exception ignored) {}
+        }
+        engine = new IncrementalDedupeEngine(mode, clean);
+        if (clearLocalCounters) {
+            localCount = 0;
+            localFileCount = 0;
+            nextOrder = 0;
+            seed = null;
+        }
+        if (seed != null) {
+            int maxOrder = nextOrder;
+            for (SourceRecord record : seed) {
+                engine.accept(record);
+                maxOrder = Math.max(maxOrder, record.getOrder() + 1);
+            }
+            nextOrder = maxOrder;
+        } else {
+            nextOrder = Math.max(nextOrder, 0);
+        }
+        System.gc();
+    }
+
+    private DedupeResult takeResultAndReleaseEngine() {
+        ensureEngine();
+        DedupeResult done = engine.finish();
+        try { engine.release(); } catch (Exception ignored) {}
+        engine = null;
+        return done;
+    }
+
     private void ensureEngine() {
         if (engine == null) engine = new IncrementalDedupeEngine(mode, clean);
     }
@@ -394,6 +492,38 @@ public final class DedupeController implements DedupeView.Listener {
         if (uri == null) return "unknown";
         String name = uri.getLastPathSegment();
         return name == null || name.trim().isEmpty() ? uri.toString() : name;
+    }
+
+    private static int skipBomAndWs(PushbackInputStream in) throws IOException {
+        // UTF-8 BOM
+        int b1 = in.read();
+        if (b1 == 0xEF) {
+            int b2 = in.read();
+            int b3 = in.read();
+            if (b2 != 0xBB || b3 != 0xBF) {
+                if (b3 >= 0) in.unread(b3);
+                if (b2 >= 0) in.unread(b2);
+                if (b1 >= 0) in.unread(b1);
+            } else {
+                b1 = in.read();
+            }
+        }
+        while (b1 >= 0 && (b1 == ' ' || b1 == '\n' || b1 == '\r' || b1 == '\t')) {
+            b1 = in.read();
+        }
+        return b1;
+    }
+
+    private static String readLimitedUtf8(InputStream in, int maxBytes) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        int total = 0;
+        while (total < maxBytes && (n = in.read(buf, 0, Math.min(buf.length, maxBytes - total))) >= 0) {
+            out.write(buf, 0, n);
+            total += n;
+        }
+        return out.toString("UTF-8");
     }
 
     public void restoreOptions(DedupeMode m, int c, boolean cl) {

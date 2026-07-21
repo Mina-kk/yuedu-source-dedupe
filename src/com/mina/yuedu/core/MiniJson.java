@@ -7,35 +7,45 @@ public final class MiniJson {
         void accept(Map<String, Object> object) throws Exception;
     }
 
-    private final String s;
-    private int p;
+    private final Reader reader;
+    private final char[] buf = new char[8192];
+    private int buflen;
+    private int bufpos;
+    private int abspos;
+    private int current = -2; // -2 = unread, -1 = EOF, else char
+    private boolean eof;
+
+    private MiniJson(Reader reader) {
+        this.reader = reader;
+    }
 
     private MiniJson(String s) {
-        this.s = s;
+        this.reader = new StringReader(s == null ? "" : s);
     }
 
     public static Object parse(String s) {
-        MiniJson j = new MiniJson(s);
-        Object v = j.value();
-        j.ws();
-        if (j.p != s.length()) throw new IllegalArgumentException("trailing JSON");
-        return v;
+        try {
+            MiniJson j = new MiniJson(s);
+            Object v = j.value();
+            j.ws();
+            if (!j.isEof()) throw new IllegalArgumentException("trailing JSON");
+            return v;
+        } catch (IOException e) {
+            throw new IllegalArgumentException("read error: " + e.getMessage());
+        }
     }
 
+    /** True streaming parse of a top-level JSON array of objects. */
     public static void parseArrayStream(Reader reader, ObjectConsumer consumer) throws Exception {
-        StringBuilder sb = new StringBuilder(Math.max(8192, 64));
-        char[] buf = new char[8192];
-        int n;
-        while ((n = reader.read(buf)) >= 0) sb.append(buf, 0, n);
-        parseArrayStream(sb.toString(), consumer);
-    }
-
-    public static void parseArrayStream(String json, ObjectConsumer consumer) throws Exception {
-        MiniJson j = new MiniJson(json);
+        if (reader == null) throw new IllegalArgumentException("reader");
+        MiniJson j = new MiniJson(new BufferedReader(reader, 65536));
         j.ws();
         j.need('[');
         j.ws();
-        if (j.ch(']')) return;
+        if (j.ch(']')) {
+            j.ws();
+            return;
+        }
         do {
             Object value = j.value();
             if (!(value instanceof Map)) {
@@ -48,24 +58,69 @@ public final class MiniJson {
         } while (j.ch(','));
         j.need(']');
         j.ws();
-        if (j.p != json.length()) throw new IllegalArgumentException("trailing JSON");
+    }
+
+    public static void parseArrayStream(String json, ObjectConsumer consumer) throws Exception {
+        parseArrayStream(new StringReader(json == null ? "" : json), consumer);
+    }
+
+    private int peek() throws IOException {
+        if (current != -2) return current;
+        if (bufpos >= buflen) {
+            if (eof) {
+                current = -1;
+                return -1;
+            }
+            buflen = reader.read(buf);
+            bufpos = 0;
+            if (buflen < 0) {
+                eof = true;
+                buflen = 0;
+                current = -1;
+                return -1;
+            }
+        }
+        current = buf[bufpos];
+        return current;
+    }
+
+    private int next() throws IOException {
+        int c = peek();
+        if (c >= 0) {
+            bufpos++;
+            abspos++;
+            current = -2;
+        }
+        return c;
+    }
+
+    private boolean isEof() {
+        try {
+            return peek() < 0;
+        } catch (IOException e) {
+            return true;
+        }
     }
 
     private Object value() {
-        ws();
-        if (p >= s.length()) throw new IllegalArgumentException("unexpected end");
-        char c = s.charAt(p);
-        if (c == '{') return object();
-        if (c == '[') return array();
-        if (c == '"') return string();
-        if (c == 't' && take("true")) return true;
-        if (c == 'f' && take("false")) return false;
-        if (c == 'n' && take("null")) return null;
-        return number();
+        try {
+            ws();
+            int c = peek();
+            if (c < 0) throw new IllegalArgumentException("unexpected end");
+            if (c == '{') return object();
+            if (c == '[') return array();
+            if (c == '"') return string();
+            if (c == 't' && take("true")) return true;
+            if (c == 'f' && take("false")) return false;
+            if (c == 'n' && take("null")) return null;
+            return number();
+        } catch (IOException e) {
+            throw new IllegalArgumentException("read error at " + abspos + ": " + e.getMessage());
+        }
     }
 
-    private Map<String, Object> object() {
-        p++;
+    private Map<String, Object> object() throws IOException {
+        need('{');
         Map<String, Object> m = new LinkedHashMap<>();
         ws();
         if (ch('}')) return m;
@@ -81,8 +136,8 @@ public final class MiniJson {
         return m;
     }
 
-    private List<Object> array() {
-        p++;
+    private List<Object> array() throws IOException {
+        need('[');
         List<Object> a = new ArrayList<>();
         ws();
         if (ch(']')) return a;
@@ -94,60 +149,83 @@ public final class MiniJson {
         return a;
     }
 
-    private String string() {
+    private String string() throws IOException {
         need('"');
         StringBuilder b = new StringBuilder();
-        while (p < s.length()) {
-            char c = s.charAt(p++);
+        while (true) {
+            int ci = next();
+            if (ci < 0) throw new IllegalArgumentException("string");
+            char c = (char) ci;
             if (c == '"') return b.toString();
             if (c == '\\') {
-                if (p >= s.length()) throw new IllegalArgumentException("escape");
-                char e = s.charAt(p++);
+                int ei = next();
+                if (ei < 0) throw new IllegalArgumentException("escape");
+                char e = (char) ei;
                 if (e == 'u') {
-                    int cp = Integer.parseInt(s.substring(p, p + 4), 16);
-                    p += 4;
+                    int cp = 0;
+                    for (int i = 0; i < 4; i++) {
+                        int h = next();
+                        if (h < 0) throw new IllegalArgumentException("unicode");
+                        cp = (cp << 4) + Character.digit((char) h, 16);
+                        if (Character.digit((char) h, 16) < 0) throw new IllegalArgumentException("unicode");
+                    }
                     b.append((char) cp);
                 } else {
                     String x = "\"\\/bfnrt";
                     String y = "\"\\/\b\f\n\r\t";
                     int i = x.indexOf(e);
-                    if (i < 0) throw new IllegalArgumentException("escape " + Integer.toHexString(e) + " at " + (p - 1));
+                    if (i < 0) throw new IllegalArgumentException("escape " + Integer.toHexString(e) + " at " + abspos);
                     b.append(y.charAt(i));
                 }
             } else b.append(c);
         }
-        throw new IllegalArgumentException("string");
     }
 
-    private Number number() {
-        int b = p;
-        while (p < s.length() && "-+0123456789.eE".indexOf(s.charAt(p)) >= 0) p++;
-        String n = s.substring(b, p);
-        return n.indexOf('.') >= 0 || n.indexOf('e') >= 0 || n.indexOf('E') >= 0 ? Double.valueOf(n) : Long.valueOf(n);
+    private Number number() throws IOException {
+        StringBuilder n = new StringBuilder();
+        while (true) {
+            int c = peek();
+            if (c < 0) break;
+            if ("-+0123456789.eE".indexOf((char) c) < 0) break;
+            n.append((char) next());
+        }
+        if (n.length() == 0) throw new IllegalArgumentException("number at " + abspos);
+        String s = n.toString();
+        return s.indexOf('.') >= 0 || s.indexOf('e') >= 0 || s.indexOf('E') >= 0
+                ? Double.valueOf(s)
+                : Long.valueOf(s);
     }
 
-    private boolean take(String x) {
-        if (s.startsWith(x, p)) {
-            p += x.length();
+    private boolean take(String x) throws IOException {
+        for (int i = 0; i < x.length(); i++) {
+            int c = peek();
+            if (c != x.charAt(i)) {
+                if (i == 0) return false;
+                throw new IllegalArgumentException("expected " + x + " at " + abspos);
+            }
+            next();
+        }
+        return true;
+    }
+
+    private void ws() throws IOException {
+        while (true) {
+            int c = peek();
+            if (c < 0 || !Character.isWhitespace((char) c)) return;
+            next();
+        }
+    }
+
+    private boolean ch(char c) throws IOException {
+        if (peek() == c) {
+            next();
             return true;
         }
         return false;
     }
 
-    private void ws() {
-        while (p < s.length() && Character.isWhitespace(s.charAt(p))) p++;
-    }
-
-    private boolean ch(char c) {
-        if (p < s.length() && s.charAt(p) == c) {
-            p++;
-            return true;
-        }
-        return false;
-    }
-
-    private void need(char c) {
-        if (!ch(c)) throw new IllegalArgumentException("expected " + c + " at " + p);
+    private void need(char c) throws IOException {
+        if (!ch(c)) throw new IllegalArgumentException("expected " + c + " at " + abspos);
     }
 
     public static String stringify(Object v) {
