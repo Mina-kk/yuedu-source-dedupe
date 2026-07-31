@@ -1,17 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.mina.yuedu" android:versionCode="7" android:versionName="2.1.4">
+    package="com.mina.yuedu" android:versionCode="240" android:versionName="2.3.10">
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="36" />
     <application android:label="@string/app_name" android:allowBackup="false"
         android:usesCleartextTraffic="true" android:icon="@mipmap/ic_launcher">
-        
-                <provider
+        <provider
             android:name=".CacheProvider"
             android:authorities="com.mina.yuedu.cache"
             android:exported="false"
-            android:grantUriPermissions="true" />
-        <activity android:name=".MainAct" android:exported="true" android:screenOrientation="portrait" android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <activity android:name=".MainAct" android:exported="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

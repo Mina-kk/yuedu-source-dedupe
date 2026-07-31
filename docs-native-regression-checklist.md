@@ -1,40 +1,25 @@
-# 原生版手工回归检查清单
+# Native regression checklist
 
-发布新版本前，建议在真实 Android 设备上完成以下检查：
-
-- [ ] 应用能够正常启动，标题显示“阅读书源去重”。
-- [ ] 界面顶部没有异常黑色区域，页面可正常纵向滚动。
-- [ ] 可以一次导入多个本地 JSON 文件。
-- [ ] 可以直接解析书源 JSON URL。
-- [ ] YCK 页面中的 JSON 链接会显示添加、打开、复制和取消菜单。
-- [ ] 并发数设为 1 和 5 时均能正常运行。
-- [ ] 中止任务时可以选择保留部分结果、丢弃结果或继续任务。
-- [ ] 标准、严格和激进模式使用不同的去重规则。
-- [ ] 切换去重模式不会重新下载已经加载的数据。
-- [ ] 默认保留名称中的 Emoji，仅在启用名称清理后移除相关装饰字符。
-- [ ] 重复项详情可以按每批 50 组继续展开。
-- [ ] 解析期间切换到 YCK 页面不会丢失任务和结果。
-- [ ] 返回 YCK 页面时能够保留浏览历史和滚动位置。
-- [ ] 可以正常保存整理后的 JSON 文件。
-- [ ] “导入到阅读”会显示系统应用选择器，并能交给兼容应用处理。
-- [ ] Activity 重建后可以恢复 URL 输入、当前页面和 YCK URL。
-- [ ] YCK 标签页首次打开配置的主站入口。
-- [ ] 解析期间不能修改模式，结果只显示本次实际使用的一种模式。
-- [ ] 同时添加两个本地文件和两个 URL 时，统计数量正确合并。
-- [ ] 本地文件选择状态正确显示文件数和书源总数。
-
-## 大数据回归
-
-- [ ] 导入约 1.5 万条书源时应用不闪退，界面保持可响应。
-- [ ] 导入过程中显示进度，完成后显示统计结果。
-- [ ] 重复/无效详情默认分页，并可“加载更多”。
-- [ ] 保存 JSON 与“导入到阅读”可正常完成。
-- [ ] 未打开 YCK 标签时不创建 WebView。
-
-## 2.1.4 回归重点
-
-- [ ] 11 个大型 YCK 合集 URL 叠加（源数量合计约 3 万）首次解析不崩溃
-- [ ] 不杀进程，立刻二次解析网络源不崩溃
-- [ ] YCK 标签页可打开主站/备用站，无明显误报网络错误
-- [ ] 并发 1～5 可选，默认 2
-- [ ] 导出/导入到阅读可完成
+- [ ] App opens without crash; title is 阅读书源去重.
+- [ ] No black top component; Apple white UI and vertical-only scroll.
+- [ ] Local multi-file JSON import works.
+- [ ] Direct JSON URL works through proxy/fallback.
+- [ ] YCK JSON link shows add/open/copy/cancel menu.
+- [ ] Concurrency 1 and 5 work.
+- [ ] Stop offers partial/discard/continue.
+- [ ] Standard, strict and aggressive modes produce distinct keys.
+- [ ] Mode changes do not redownload loaded data.
+- [ ] Emoji is retained by default and cleaned only when enabled.
+- [ ] Duplicate details expand in groups of 50.
+- [ ] Switching to YCK during parsing preserves the task and result.
+- [ ] YCK history and position remain available.
+- [ ] Save JSON works.
+- [ ] Import to 阅读 appears and opens the app.
+- [ ] Activity recreation restores URL input, selected page, and YCK URL.
+- [ ] YCK Tab initially opens `www.yckceo.com/yuedu/shuyuan`.
+- [ ] YCK site menu offers 主站 / 备用 / 发布页; 发布页 opens `yckceo.vip`.
+- [ ] When the selected YCK site fails to load, app auto-switches to the other site with a toast.
+- [ ] App has exactly two tabs (去重 / YCK); no 制作 tab.
+- [ ] Mode controls are disabled while parsing; results show exactly one active mode.
+- [ ] Two local files plus two URLs produce a combined total.
+- [ ] Local selection status gives file and source totals.

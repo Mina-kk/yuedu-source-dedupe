@@ -1,16 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+SDK="$HOME/.buildozer/android/platform/android-sdk"
 BT="$SDK/build-tools/34.0.0"
 AJAR="$SDK/platforms/android-34/android.jar"
-for tool in "$BT/aapt" "$BT/d8" "$BT/zipalign" "$BT/apksigner" "$AJAR"; do
-  if [ ! -e "$tool" ]; then
-    echo "Missing Android SDK component: $tool" >&2
-    echo "Set ANDROID_SDK_ROOT or ANDROID_HOME to an SDK containing Platform 34 and Build Tools 34.0.0." >&2
-    exit 1
-  fi
-done
 rm -rf bin dist
 mkdir -p bin/classes dist
 export JAVA_TOOL_OPTIONS="-Xmx384m -XX:MaxMetaspaceSize=192m"
