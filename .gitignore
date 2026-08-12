@@ -1,17 +1,20 @@
 # Build output
+.gradle/
+**/build/
 bin/
 dist/
 test-bin/
 *.apk
 *.idsig
+*.aab
 
-# Local Android/Java configuration
+# Local Android / Java configuration
 local.properties
-.gradle/
 .idea/
 *.iml
 
 # Signing material and secrets
+keystore/
 *.jks
 *.keystore
 *.p12
@@ -19,6 +22,11 @@ local.properties
 *.key
 .env
 .env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.part
 
 # Editor / OS
 .vscode/

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">阅读书源去重</string>
+    <string name="tab_dedupe">去重</string>
+    <string name="tab_yck">YCK</string>
+    <string name="choose_json">选择 JSON 文件</string>
+    <string name="parse_network">解析网络源</string>
+    <string name="check_source">校验源是否可用</string>
+    <string name="check_source_config">校验书源配置</string>
+    <string name="check_source_timeout">校验超时(秒)</string>
+    <string name="search">搜索</string>
+    <string name="discovery">发现</string>
+    <string name="source_tab_info">详情</string>
+    <string name="chapter_list">目录</string>
+    <string name="source_tab_content">正文</string>
+    <string name="import_reader">导入到阅读</string>
+    <string name="save_json">保存 JSON</string>
+    <string name="clear_all">清空</string>
+    <string name="only_usable">仅导出可用源</string>
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+</resources>
