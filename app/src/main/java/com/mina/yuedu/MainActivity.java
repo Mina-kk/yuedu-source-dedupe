@@ -28,9 +28,11 @@ import com.google.android.material.checkbox.MaterialCheckBox;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.progressindicator.LinearProgressIndicator;
+import androidx.core.content.ContextCompat;
 import com.google.android.material.slider.Slider;
 import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 import com.mina.yuedu.check.*;
 import com.mina.yuedu.core.*;
 import com.mina.yuedu.model.*;
@@ -50,6 +52,9 @@ public class MainActivity extends AppCompatActivity {
   private TextInputEditText etUrls;
   private TextView tvLocalStatus, tvModeDesc, tvProgress, tvStatus, tvStats, tvCheckStats;
   private View cardRunning, cardResult;
+  private LinearLayout boxKindExport, rowCheckTiles;
+  private TextView tvExportPreview;
+  private final Map<SourceKind, KindRow> kindRows = new EnumMap<>(SourceKind.class);
   private LinearProgressIndicator progressBar;
   private MaterialSwitch switchCleanNames, switchOnlyUsable;
   private MaterialButtonToggleGroup modeGroup;
@@ -67,7 +72,8 @@ public class MainActivity extends AppCompatActivity {
   private CheckSourceEngine checkEngine;
   private boolean cleanNames, partial, discard, onlyUsable;
   private boolean fetchRunning, checkRunning, checkCancelRequested;
-  private int concurrency = 4, checkConcurrency = 8, nextOrder, localFileCount, currentTab;
+  private int concurrency = 4, nextOrder, localFileCount, currentTab;
+  private final CheckSourceSettings checkSettings = new CheckSourceSettings();
   private String pendingSave, backgroundTaskText = "";
   private YckSite yckSite = YckSite.MAIN;
   private YckWebClient yckClient;
@@ -90,8 +96,7 @@ public class MainActivity extends AppCompatActivity {
     tabs.addTab(tabs.newTab().setText(R.string.tab_yck));
 
     yckSite = YckSite.fromPreference(getSharedPreferences("yck", MODE_PRIVATE).getString("site", "main"));
-    checkConcurrency = getSharedPreferences("check", MODE_PRIVATE).getInt("concurrency", 8);
-    if (checkConcurrency < 1 || checkConcurrency > CheckSourceSettings.MAX_CONCURRENCY) checkConcurrency = 8;
+    loadCheckSettings();
 
     dedupePage = getLayoutInflater().inflate(R.layout.page_dedupe, pageContainer, false);
     pageContainer.addView(dedupePage);
@@ -158,6 +163,22 @@ public class MainActivity extends AppCompatActivity {
     tvStatus = root.findViewById(R.id.tvStatus);
     tvStats = root.findViewById(R.id.tvStats);
     tvCheckStats = root.findViewById(R.id.tvCheckStats);
+    boxKindExport = root.findViewById(R.id.boxKindExport);
+    rowCheckTiles = root.findViewById(R.id.rowCheckTiles);
+    tvExportPreview = root.findViewById(R.id.tvExportPreview);
+    kindRows.clear();
+    bindKindRow(root, R.id.rowKindNovel, SourceKind.NOVEL, R.color.md_theme_primary);
+    bindKindRow(root, R.id.rowKindComic, SourceKind.COMIC, R.color.md_theme_primary);
+    bindKindRow(root, R.id.rowKindVideo, SourceKind.VIDEO, R.color.md_theme_primary);
+    bindKindRow(root, R.id.rowKindAudio, SourceKind.AUDIO, R.color.md_theme_primary);
+    bindKindRow(root, R.id.rowKindFile, SourceKind.FILE, R.color.md_theme_primary);
+    bindStatTile(root.findViewById(R.id.tileOriginal), "原始", R.color.md_theme_on_surface);
+    bindStatTile(root.findViewById(R.id.tileDup), "重复", R.color.md_theme_secondary);
+    bindStatTile(root.findViewById(R.id.tileKept), "有效", R.color.md_theme_success);
+    bindStatTile(root.findViewById(R.id.tileBad), "错误", R.color.md_theme_error);
+    bindStatTile(root.findViewById(R.id.tileOk), "可用", R.color.md_theme_success);
+    bindStatTile(root.findViewById(R.id.tileFail), "失败", R.color.md_theme_error);
+    bindStatTile(root.findViewById(R.id.tileTimeout), "超时", R.color.md_theme_secondary);
     cardRunning = root.findViewById(R.id.cardRunning);
     cardResult = root.findViewById(R.id.cardResult);
     progressBar = root.findViewById(R.id.progressBar);
@@ -184,7 +205,7 @@ public class MainActivity extends AppCompatActivity {
     });
     sliderConcurrency.addOnChangeListener((s, value, fromUser) -> concurrency = Math.round(value));
     switchCleanNames.setOnCheckedChangeListener((b, on) -> { cleanNames = on; if (result != null) recompute(partial); });
-    switchOnlyUsable.setOnCheckedChangeListener((b, on) -> onlyUsable = on);
+    switchOnlyUsable.setOnCheckedChangeListener((b, on) -> { onlyUsable = on; refreshExportPreview(); });
     btnParse.setOnClickListener(v -> startParse());
     btnStop.setOnClickListener(v -> stopCurrentTask());
     btnCheck.setOnClickListener(v -> showCheckDialog());
@@ -327,18 +348,26 @@ public class MainActivity extends AppCompatActivity {
     btnImport.setEnabled(hasRetained);
     btnSave.setEnabled(hasRetained);
     tvStats.setText(ResultSummary.format(mode, buckets.localCount(), buckets.networkCount(), result, isPartial));
+    setStatValue(R.id.tileOriginal, result.getOriginalCount());
+    setStatValue(R.id.tileDup, result.getDuplicateCount());
+    setStatValue(R.id.tileKept, result.getRetained().size());
+    setStatValue(R.id.tileBad, result.getInvalid().size());
     if (!checkResults.isEmpty()) renderCheckStats();
     else if (!all.isEmpty() && !hasRetained) {
       // 无有效结果时展示首条错误，便于定位抓取/解析失败
       tvCheckStats.setVisibility(View.VISIBLE);
+      if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.GONE);
       switchOnlyUsable.setVisibility(View.GONE);
       InvalidSource first = all.get(0);
       String detail = first.getDetail() == null ? first.getKind().name() : first.getDetail();
       if (detail.length() > 180) detail = detail.substring(0, 180) + "…";
       tvCheckStats.setText("错误：" + detail);
+      renderKindExportSwitches();
     } else {
       tvCheckStats.setVisibility(View.GONE);
+      if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.GONE);
       switchOnlyUsable.setVisibility(View.GONE);
+      renderKindExportSwitches();
     }
   }
 
@@ -352,6 +381,9 @@ public class MainActivity extends AppCompatActivity {
     for (int i = 0; i < modeGroup.getChildCount(); i++) modeGroup.getChildAt(i).setEnabled(!running);
     switchCleanNames.setEnabled(!running);
     sliderConcurrency.setEnabled(!running);
+    for (KindRow row : kindRows.values()) {
+      if (row.sw != null) row.sw.setEnabled(!running);
+    }
   }
 
   private void clearAll() {
@@ -399,6 +431,112 @@ public class MainActivity extends AppCompatActivity {
     recompute(false);
   }
 
+  private SharedPreferences checkPrefs() {
+    return getSharedPreferences("check", MODE_PRIVATE);
+  }
+
+  private void loadCheckSettings() {
+    SharedPreferences p = checkPrefs();
+    checkSettings.timeoutSeconds = p.getInt("timeout", CheckSourceSettings.DEFAULT_TIMEOUT);
+    checkSettings.concurrency = p.getInt("concurrency", CheckSourceSettings.DEFAULT_CONCURRENCY);
+    checkSettings.keyword = p.getString("keyword", CheckSourceSettings.DEFAULT_KEYWORD);
+    checkSettings.checkSearch = p.getBoolean("search", true);
+    checkSettings.checkDiscovery = p.getBoolean("discovery", true);
+    checkSettings.checkInfo = p.getBoolean("info", true);
+    checkSettings.checkCategory = p.getBoolean("category", true);
+    checkSettings.checkContent = p.getBoolean("content", true);
+    checkSettings.checkNovel = p.getBoolean("kindNovel", true);
+    checkSettings.checkComic = p.getBoolean("kindComic", true);
+    checkSettings.checkVideo = p.getBoolean("kindVideo", true);
+    checkSettings.checkAudio = p.getBoolean("kindAudio", true);
+    checkSettings.checkFile = p.getBoolean("kindFile", true);
+    checkSettings.normalize();
+  }
+
+  private void saveCheckSettings() {
+    checkSettings.normalize();
+    checkPrefs().edit()
+        .putInt("timeout", (int) checkSettings.timeoutSeconds)
+        .putInt("concurrency", checkSettings.concurrency)
+        .putString("keyword", checkSettings.keyword)
+        .putBoolean("search", checkSettings.checkSearch)
+        .putBoolean("discovery", checkSettings.checkDiscovery)
+        .putBoolean("info", checkSettings.checkInfo)
+        .putBoolean("category", checkSettings.checkCategory)
+        .putBoolean("content", checkSettings.checkContent)
+        .putBoolean("kindNovel", checkSettings.checkNovel)
+        .putBoolean("kindComic", checkSettings.checkComic)
+        .putBoolean("kindVideo", checkSettings.checkVideo)
+        .putBoolean("kindAudio", checkSettings.checkAudio)
+        .putBoolean("kindFile", checkSettings.checkFile)
+        .apply();
+  }
+
+  private void bindCheckDialog(View v) {
+    Slider slider = v.findViewById(R.id.sliderTimeout);
+    TextView label = v.findViewById(R.id.tvTimeoutLabel);
+    Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
+    TextView checkConcurrencyLabel = v.findViewById(R.id.tvCheckConcurrencyLabel);
+    MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
+    MaterialCheckBox cbDiscovery = v.findViewById(R.id.cbDiscovery);
+    MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
+    MaterialCheckBox cbCategory = v.findViewById(R.id.cbCategory);
+    MaterialCheckBox cbContent = v.findViewById(R.id.cbContent);
+    TextInputLayout tilKeyword = v.findViewById(R.id.tilCheckKeyword);
+    TextInputEditText etKeyword = v.findViewById(R.id.etCheckKeyword);
+    MaterialCheckBox cbKindNovel = v.findViewById(R.id.cbKindNovel);
+    MaterialCheckBox cbKindComic = v.findViewById(R.id.cbKindComic);
+    MaterialCheckBox cbKindVideo = v.findViewById(R.id.cbKindVideo);
+    MaterialCheckBox cbKindAudio = v.findViewById(R.id.cbKindAudio);
+    MaterialCheckBox cbKindFile = v.findViewById(R.id.cbKindFile);
+
+    slider.setValue(checkSettings.timeoutSeconds);
+    label.setText("校验超时(秒)：" + checkSettings.timeoutSeconds);
+    checkConcurrencySlider.setValue(checkSettings.concurrency);
+    checkConcurrencyLabel.setText("并发校验数量：" + checkSettings.concurrency);
+    cbSearch.setChecked(checkSettings.checkSearch);
+    cbDiscovery.setChecked(checkSettings.checkDiscovery);
+    cbInfo.setChecked(checkSettings.checkInfo);
+    cbCategory.setChecked(checkSettings.checkCategory);
+    cbContent.setChecked(checkSettings.checkContent);
+    etKeyword.setText(checkSettings.keyword);
+    tilKeyword.setEnabled(checkSettings.checkSearch);
+    etKeyword.setEnabled(checkSettings.checkSearch);
+    cbKindNovel.setChecked(checkSettings.checkNovel);
+    cbKindComic.setChecked(checkSettings.checkComic);
+    cbKindVideo.setChecked(checkSettings.checkVideo);
+    cbKindAudio.setChecked(checkSettings.checkAudio);
+    cbKindFile.setChecked(checkSettings.checkFile);
+    cbCategory.setEnabled(cbInfo.isChecked());
+    cbContent.setEnabled(cbInfo.isChecked() && cbCategory.isChecked());
+  }
+
+  private void collectCheckDialog(View v) {
+    Slider slider = v.findViewById(R.id.sliderTimeout);
+    Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
+    MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
+    MaterialCheckBox cbDiscovery = v.findViewById(R.id.cbDiscovery);
+    MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
+    MaterialCheckBox cbCategory = v.findViewById(R.id.cbCategory);
+    MaterialCheckBox cbContent = v.findViewById(R.id.cbContent);
+    TextInputEditText etKeyword = v.findViewById(R.id.etCheckKeyword);
+    checkSettings.timeoutSeconds = Math.round(slider.getValue());
+    if (checkSettings.timeoutSeconds <= 0) checkSettings.timeoutSeconds = CheckSourceSettings.DEFAULT_TIMEOUT;
+    checkSettings.concurrency = Math.round(checkConcurrencySlider.getValue());
+    checkSettings.checkSearch = cbSearch.isChecked();
+    checkSettings.checkDiscovery = cbDiscovery.isChecked();
+    checkSettings.checkInfo = cbInfo.isChecked();
+    checkSettings.checkCategory = cbCategory.isChecked();
+    checkSettings.checkContent = cbContent.isChecked();
+    checkSettings.keyword = etKeyword.getText() == null ? "" : etKeyword.getText().toString();
+    checkSettings.checkNovel = ((MaterialCheckBox) v.findViewById(R.id.cbKindNovel)).isChecked();
+    checkSettings.checkComic = ((MaterialCheckBox) v.findViewById(R.id.cbKindComic)).isChecked();
+    checkSettings.checkVideo = ((MaterialCheckBox) v.findViewById(R.id.cbKindVideo)).isChecked();
+    checkSettings.checkAudio = ((MaterialCheckBox) v.findViewById(R.id.cbKindAudio)).isChecked();
+    checkSettings.checkFile = ((MaterialCheckBox) v.findViewById(R.id.cbKindFile)).isChecked();
+    checkSettings.normalize();
+  }
+
   private void showCheckDialog() {
     if (result == null || result.getRetained().isEmpty()) { toast("请先解析网络源或选择 JSON 文件，再进行校验"); return; }
     BottomSheetDialog dialog = new BottomSheetDialog(this);
@@ -408,34 +546,33 @@ public class MainActivity extends AppCompatActivity {
     TextView label = v.findViewById(R.id.tvTimeoutLabel);
     Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
     TextView checkConcurrencyLabel = v.findViewById(R.id.tvCheckConcurrencyLabel);
-    checkConcurrencySlider.setValue(checkConcurrency);
-    checkConcurrencyLabel.setText("并发校验数量：" + checkConcurrency);
     MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
-    MaterialCheckBox cbDiscovery = v.findViewById(R.id.cbDiscovery);
     MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
     MaterialCheckBox cbCategory = v.findViewById(R.id.cbCategory);
     MaterialCheckBox cbContent = v.findViewById(R.id.cbContent);
+    TextInputLayout tilKeyword = v.findViewById(R.id.tilCheckKeyword);
+    TextInputEditText etKeyword = v.findViewById(R.id.etCheckKeyword);
+    bindCheckDialog(v);
     slider.addOnChangeListener((s, value, fromUser) -> label.setText("校验超时(秒)：" + Math.round(value)));
     checkConcurrencySlider.addOnChangeListener((s, value, fromUser) ->
         checkConcurrencyLabel.setText("并发校验数量：" + Math.round(value)));
+    cbSearch.setOnCheckedChangeListener((b, on) -> {
+      tilKeyword.setEnabled(on);
+      etKeyword.setEnabled(on);
+    });
     cbInfo.setOnCheckedChangeListener((b, on) -> { cbCategory.setEnabled(on); if (!on) { cbCategory.setChecked(false); cbContent.setChecked(false);} });
     cbCategory.setOnCheckedChangeListener((b, on) -> { cbContent.setEnabled(on && cbInfo.isChecked()); if (!on) cbContent.setChecked(false); });
+    v.findViewById(R.id.btnReset).setOnClickListener(x -> {
+      checkSettings.resetToDefaults();
+      saveCheckSettings();
+      bindCheckDialog(v);
+    });
     v.findViewById(R.id.btnCancel).setOnClickListener(x -> dialog.dismiss());
     v.findViewById(R.id.btnOk).setOnClickListener(x -> {
-      CheckSourceSettings settings = new CheckSourceSettings();
-      settings.timeoutSeconds = Math.round(slider.getValue());
-      if (settings.timeoutSeconds <= 0) settings.timeoutSeconds = 180;
-      settings.checkSearch = cbSearch.isChecked();
-      settings.checkDiscovery = cbDiscovery.isChecked();
-      settings.checkInfo = cbInfo.isChecked();
-      settings.checkCategory = cbCategory.isChecked();
-      settings.checkContent = cbContent.isChecked();
-      checkConcurrency = Math.round(checkConcurrencySlider.getValue());
-      settings.concurrency = checkConcurrency;
-      getSharedPreferences("check", MODE_PRIVATE).edit().putInt("concurrency", checkConcurrency).apply();
-      settings.normalize();
+      collectCheckDialog(v);
+      saveCheckSettings();
       dialog.dismiss();
-      runCheck(settings);
+      runCheck(checkSettings);
     });
     dialog.show();
   }
@@ -452,7 +589,8 @@ public class MainActivity extends AppCompatActivity {
     btnStop.setEnabled(true);
     updateBackgroundTask("后台校验 0 / " + targets.size());
     tvProgress.setText("正在校验书源 0 / " + targets.size());
-    tvStatus.setText("超时 " + settings.timeoutSeconds + "s · 并发 " + settings.concurrency);
+    tvStatus.setText("超时 " + settings.timeoutSeconds + "s · 并发 " + settings.concurrency
+        + " · 关键词 " + settings.keyword);
     progressBar.setProgressCompat(0, false);
     checkEngine = new CheckSourceEngine(settings.concurrency);
     new Thread(() -> checkEngine.checkAll(targets, settings, new CheckSourceEngine.Listener() {
@@ -486,27 +624,145 @@ public class MainActivity extends AppCompatActivity {
   private void renderCheckStats() {
     int ok = 0, fail = 0, timeout = 0;
     for (CheckSourceResult r : checkResults) {
+      if (r.status == CheckSourceResult.Status.SKIPPED) continue;
       if (r.status == CheckSourceResult.Status.SUCCESS) ok++;
       else if (r.status == CheckSourceResult.Status.TIMEOUT) timeout++;
       else fail++;
     }
     tvCheckStats.setVisibility(View.VISIBLE);
-    tvCheckStats.setText("校验：可用 " + ok + " · 失败 " + fail + " · 超时 " + timeout);
+    tvCheckStats.setText(getString(R.string.check_result_title));
+    if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.VISIBLE);
+    setStatValue(R.id.tileOk, ok);
+    setStatValue(R.id.tileFail, fail);
+    setStatValue(R.id.tileTimeout, timeout);
+    renderKindExportSwitches();
+  }
+
+  private void bindKindRow(View root, int rowId, SourceKind kind, int colorRes) {
+    View rowView = root.findViewById(rowId);
+    KindRow row = new KindRow(rowView);
+    int color = ContextCompat.getColor(this, colorRes);
+    row.rail.setBackgroundColor(color);
+    row.bar.setIndicatorColor(color);
+    row.title.setText(kind.label);
+    row.sw.setChecked(checkPrefs().getBoolean("import" + kind.name(), true));
+    row.sw.setOnCheckedChangeListener((b, on) -> {
+      checkPrefs().edit().putBoolean("import" + kind.name(), on).apply();
+      refreshExportPreview();
+    });
+    kindRows.put(kind, row);
+  }
+
+  private void bindStatTile(View tile, String label, int colorRes) {
+    if (tile == null) return;
+    TextView value = tile.findViewById(R.id.tvStatValue);
+    TextView name = tile.findViewById(R.id.tvStatLabel);
+    if (name != null) name.setText(label);
+    if (value != null) value.setTextColor(ContextCompat.getColor(this, colorRes));
+  }
+
+  private void setStatValue(int tileId, int number) {
+    View tile = findViewById(tileId);
+    if (tile == null) return;
+    TextView value = tile.findViewById(R.id.tvStatValue);
+    if (value != null) value.setText(String.valueOf(number));
+  }
+
+  private void renderKindExportSwitches() {
+    if (boxKindExport == null) return;
+    if (result == null || result.getRetained().isEmpty()) {
+      boxKindExport.setVisibility(View.GONE);
+      return;
+    }
+    Map<SourceKind, Integer> totals = SourceKind.counts(result.getRetained());
+    Map<SourceKind, int[]> checked = new LinkedHashMap<>();
+    for (SourceKind k : SourceKind.values()) checked.put(k, new int[]{0, 0});
+    for (CheckSourceResult r : checkResults) {
+      if (r.status == CheckSourceResult.Status.SKIPPED) continue;
+      SourceKind kind = r.kind == null ? SourceKind.NOVEL : r.kind;
+      int[] n = checked.get(kind);
+      n[1]++;
+      if (r.status == CheckSourceResult.Status.SUCCESS) n[0]++;
+    }
+    boolean any = false;
+    for (SourceKind k : SourceKind.values()) {
+      KindRow row = kindRows.get(k);
+      if (row == null) continue;
+      int total = totals.get(k) == null ? 0 : totals.get(k);
+      int[] n = checked.get(k);
+      if (total <= 0) {
+        row.root.setVisibility(View.GONE);
+        continue;
+      }
+      any = true;
+      row.root.setVisibility(View.VISIBLE);
+      if (!checkResults.isEmpty() && n[1] > 0) {
+        int pct = n[1] == 0 ? 0 : Math.round(n[0] * 100f / n[1]);
+        row.detail.setText("可用 " + n[0] + " · 共 " + n[1] + " · 通过 " + pct + "%");
+        row.bar.setProgressCompat(pct, true);
+      } else {
+        row.detail.setText("去重后 " + total + " 条，尚未校验");
+        row.bar.setProgressCompat(0, false);
+      }
+    }
+    boxKindExport.setVisibility(any ? View.VISIBLE : View.GONE);
+    refreshExportPreview();
+  }
+
+  private void refreshExportPreview() {
+    if (tvExportPreview == null) return;
+    int n = exportRecords().size();
+    tvExportPreview.setText("当前将导入 / 保存 " + n + " 条");
+  }
+
+  private Set<SourceKind> selectedExportKinds() {
+    Set<SourceKind> allow = new LinkedHashSet<>();
+    for (Map.Entry<SourceKind, KindRow> e : kindRows.entrySet()) {
+      KindRow row = e.getValue();
+      if (row != null && row.root.getVisibility() == View.VISIBLE && row.sw.isChecked()) allow.add(e.getKey());
+    }
+    return allow;
+  }
+
+  private static final class KindRow {
+    final View root;
+    final MaterialSwitch sw;
+    final TextView title;
+    final TextView detail;
+    final LinearProgressIndicator bar;
+    final View rail;
+    KindRow(View root) {
+      this.root = root;
+      this.sw = root.findViewById(R.id.switchKind);
+      this.title = root.findViewById(R.id.tvKindTitle);
+      this.detail = root.findViewById(R.id.tvKindDetail);
+      this.bar = root.findViewById(R.id.barKind);
+      this.rail = root.findViewById(R.id.kindRail);
+    }
   }
 
   private List<SourceRecord> exportRecords() {
     if (result == null) return Collections.emptyList();
-    if (!onlyUsable || checkResults.isEmpty()) return result.getRetained();
-    Set<String> good = new HashSet<>();
-    for (CheckSourceResult r : checkResults) if (r.isUsable() && r.source.getUrl() != null) good.add(r.source.getUrl());
-    List<SourceRecord> out = new ArrayList<>();
-    for (SourceRecord s : result.getRetained()) if (s.getUrl() != null && good.contains(s.getUrl())) out.add(s);
-    return out;
+    List<SourceRecord> base;
+    if (!onlyUsable || checkResults.isEmpty()) {
+      base = result.getRetained();
+    } else {
+      Set<String> good = new HashSet<>();
+      for (CheckSourceResult r : checkResults) if (r.isUsable() && r.source.getUrl() != null) good.add(r.source.getUrl());
+      base = new ArrayList<>();
+      for (SourceRecord s : result.getRetained()) if (s.getUrl() != null && good.contains(s.getUrl())) base.add(s);
+    }
+    Set<SourceKind> allow = selectedExportKinds();
+    if (allow.isEmpty()) return Collections.emptyList();
+    return SourceKind.filter(base, allow);
   }
 
   private List<Object> exportPayload() {
-    List<SourceRecord> list = exportRecords();
-    if (list.isEmpty()) return Collections.emptyList();
+    return exportPayload(exportRecords());
+  }
+
+  private List<Object> exportPayload(List<SourceRecord> list) {
+    if (list == null || list.isEmpty()) return Collections.emptyList();
     List<Object> payload = new ArrayList<>();
     String stamp = new SimpleDateFormat("yyyy-M-d", Locale.CHINA).format(new Date());
     String mark = "✔" + stamp + "检验去重（优质" + list.size() + "）";
@@ -522,7 +778,8 @@ public class MainActivity extends AppCompatActivity {
       // attach check groups if any
       for (CheckSourceResult cr : checkResults) {
         if (cr.source.getUrl() != null && cr.source.getUrl().equals(s.getUrl()) && !cr.groups.isEmpty()) {
-          String cg = String.join(",", cr.groups);
+          String prefix = (cr.kind == null ? SourceKind.NOVEL : cr.kind).label;
+          String cg = prefix + ":" + String.join(",", cr.groups);
           Object comment = m.get("bookSourceComment");
           String c = comment == null ? "" : String.valueOf(comment);
           if (!c.contains(cg)) m.put("bookSourceComment", c.isEmpty() ? cg : c + " | " + cg);
@@ -534,12 +791,22 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private String exportJson() {
-    List<Object> payload = exportPayload();
+    return exportJson(exportRecords());
+  }
+
+  private String exportJson(List<SourceRecord> list) {
+    List<Object> payload = exportPayload(list);
     return payload.isEmpty() ? null : MiniJson.stringify(payload);
   }
 
   private void importReader() {
-    String json = exportJson();
+    List<SourceRecord> candidates = exportRecords();
+    if (candidates.isEmpty()) { toast("没有可导入的数据，请打开要导入的类型开关"); return; }
+    startReaderImport(candidates);
+  }
+
+  private void startReaderImport(List<SourceRecord> list) {
+    String json = exportJson(list);
     if (json == null) { toast("没有可导入的数据"); return; }
     try {
       // Reading fetches this URL immediately before showing its native BatchImportDialog.
@@ -554,7 +821,7 @@ public class MainActivity extends AppCompatActivity {
           view, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
       if (readers.isEmpty()) throw new ActivityNotFoundException("未找到支持 legado:// 导入的阅读 App");
       startActivity(view);
-      toast("请在阅读中勾选需要导入的书源");
+      toast("将导入 " + list.size() + " 条到阅读，请再勾选确认");
     } catch (Exception e) {
       ReaderImportService.cancel(this);
       toast("打开阅读选择页失败：" + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));

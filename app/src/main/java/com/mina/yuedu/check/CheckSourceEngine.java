@@ -91,12 +91,17 @@ public final class CheckSourceEngine {
 
   private CheckSourceResult checkOne(SourceRecord source, CheckSourceSettings settings) {
     long start = System.currentTimeMillis();
+    SourceKind kind = SourceKind.of(source);
+    if (!settings.allows(kind)) {
+      return new CheckSourceResult(source, CheckSourceResult.Status.SKIPPED, new ArrayList<String>(),
+          "跳过类型", 0, kind);
+    }
     List<String> groups = new ArrayList<>();
     ExecutorService one = Executors.newSingleThreadExecutor();
     Future<List<String>> future = null;
     try {
       if (cancelled) return null;
-      future = one.submit(() -> doCheck(source, settings));
+      future = one.submit(() -> doCheck(source, settings, kind));
       runningChecks.add(future);
       if (cancelled) {
         future.cancel(true);
@@ -108,30 +113,30 @@ public final class CheckSourceEngine {
         future.cancel(true);
         groups.add("校验超时");
         return new CheckSourceResult(source, CheckSourceResult.Status.TIMEOUT, groups, "timeout",
-            System.currentTimeMillis() - start);
+            System.currentTimeMillis() - start, kind);
       } catch (CancellationException ce) {
         return null;
       }
       if (cancelled || Thread.currentThread().isInterrupted()) return null;
       long cost = System.currentTimeMillis() - start;
       if (groups.isEmpty()) {
-        return new CheckSourceResult(source, CheckSourceResult.Status.SUCCESS, groups, "校验成功", cost);
+        return new CheckSourceResult(source, CheckSourceResult.Status.SUCCESS, groups, "校验成功", cost, kind);
       }
       return new CheckSourceResult(source, CheckSourceResult.Status.FAILED, groups,
-          String.join(",", groups), cost);
+          String.join(",", groups), cost, kind);
     } catch (Exception e) {
       if (cancelled || Thread.currentThread().isInterrupted()) return null;
       groups.add("网站失效");
       return new CheckSourceResult(source, CheckSourceResult.Status.FAILED, groups,
           e.getMessage() == null ? "error" : e.getMessage(),
-          System.currentTimeMillis() - start);
+          System.currentTimeMillis() - start, kind);
     } finally {
       if (future != null) runningChecks.remove(future);
       one.shutdownNow();
     }
   }
 
-  private List<String> doCheck(SourceRecord source, CheckSourceSettings settings) {
+  private List<String> doCheck(SourceRecord source, CheckSourceSettings settings, SourceKind kind) {
     List<String> bad = new ArrayList<>();
     String base;
     try {
@@ -271,16 +276,17 @@ public final class CheckSourceEngine {
     if (Thread.currentThread().isInterrupted()) return bad;
 
     if (settings.checkContent) {
+      String contentFail = kind.contentFailGroup();
       if (!ResultInspect.hasRule(ruleContent) && chapterUrl == null) {
-        bad.add("正文失效");
+        bad.add(contentFail);
       } else if (chapterUrl != null) {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(chapterUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
-          ResultInspect.Hit hit = ResultInspect.inspectChapterContent(r.body);
-          if (!r.httpOk() || !hit.ok) bad.add("正文失效");
+          ResultInspect.Hit hit = ResultInspect.inspectContent(r.body, kind);
+          if (!r.httpOk() || !hit.ok) bad.add(contentFail);
         } catch (Exception e) {
-          bad.add("正文失效");
+          bad.add(contentFail);
         }
       }
     }

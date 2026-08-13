@@ -11,4 +11,16 @@
     <color name="md_theme_outline">#79747E</color>
     <color name="md_theme_error">#B3261E</color>
     <color name="md_theme_success">#2E7D32</color>
+    <color name="ledger_paper">#EADDFF</color>
+    <color name="ledger_rule">#E7E0EC</color>
+    <color name="ledger_ink">#1C1B1F</color>
+    <color name="ledger_muted">#79747E</color>
+    <color name="stat_ok_ink">#2E7D32</color>
+    <color name="stat_fail_ink">#B3261E</color>
+    <color name="stat_timeout_ink">#625B71</color>
+    <color name="kind_novel_ink">#6750A4</color>
+    <color name="kind_comic_ink">#6750A4</color>
+    <color name="kind_video_ink">#6750A4</color>
+    <color name="kind_audio_ink">#6750A4</color>
+    <color name="kind_file_ink">#6750A4</color>
 </resources>

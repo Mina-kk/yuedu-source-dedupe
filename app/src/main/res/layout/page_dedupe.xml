@@ -206,16 +206,139 @@
                     android:id="@+id/tvStats"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:textSize="15sp" />
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/ledger_ink"
+                    android:textSize="16sp" />
+
+                <LinearLayout
+                    android:id="@+id/rowDedupeTiles"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <include
+                        android:id="@+id/tileOriginal"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+
+                    <include
+                        android:id="@+id/tileDup"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+
+                    <include
+                        android:id="@+id/tileKept"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+
+                    <include
+                        android:id="@+id/tileBad"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/tvCheckStats"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:textColor="@color/md_theme_outline"
+                    android:layout_marginTop="12dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:text="@string/check_result_title"
+                    android:textColor="@color/ledger_ink"
+                    android:textSize="13sp"
                     android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/rowCheckTiles"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <include
+                        android:id="@+id/tileOk"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+
+                    <include
+                        android:id="@+id/tileFail"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+
+                    <include
+                        android:id="@+id/tileTimeout"
+                        layout="@layout/item_stat_tile"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_margin="4dp"
+                        android:layout_weight="1" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/boxKindExport"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:text="@string/export_kinds"
+                        android:textColor="@color/ledger_ink"
+                        android:textSize="13sp" />
+
+                    <include
+                        android:id="@+id/rowKindNovel"
+                        layout="@layout/item_kind_export" />
+
+                    <include
+                        android:id="@+id/rowKindComic"
+                        layout="@layout/item_kind_export" />
+
+                    <include
+                        android:id="@+id/rowKindVideo"
+                        layout="@layout/item_kind_export" />
+
+                    <include
+                        android:id="@+id/rowKindAudio"
+                        layout="@layout/item_kind_export" />
+
+                    <include
+                        android:id="@+id/rowKindFile"
+                        layout="@layout/item_kind_export" />
+
+                    <TextView
+                        android:id="@+id/tvExportPreview"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:textColor="@color/ledger_muted"
+                        android:textSize="13sp" />
+                </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnCheck"

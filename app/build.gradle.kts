@@ -1,14 +1,6 @@
 plugins {
     id("com.android.application")
 }
-
-val signingStore = providers.gradleProperty("YueduStoreFile").orNull?.let(::file)
-val signingStorePassword = providers.gradleProperty("YueduStorePassword").orNull
-val signingKeyAlias = providers.gradleProperty("YueduKeyAlias").orNull
-val signingKeyPassword = providers.gradleProperty("YueduKeyPassword").orNull
-val hasPublishedSigning = signingStore?.isFile == true &&
-    signingStorePassword != null && signingKeyAlias != null && signingKeyPassword != null
-
 android {
     namespace = "com.mina.yuedu"
     compileSdk = 35
@@ -16,18 +8,16 @@ android {
         applicationId = "com.mina.yuedu"
         minSdk = 24
         targetSdk = 35
-        versionCode = 300
-        versionName = "3.0.0-md3"
+        versionCode = 303
+        versionName = "3.0.1-md3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
-        if (hasPublishedSigning) {
-            create("published") {
-                storeFile = signingStore!!
-                storePassword = signingStorePassword!!
-                keyAlias = signingKeyAlias!!
-                keyPassword = signingKeyPassword!!
-            }
+        create("debugKey") {
+            storeFile = file("../keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
     compileOptions {
@@ -36,11 +26,11 @@ android {
     }
     buildTypes {
         debug {
-            if (hasPublishedSigning) signingConfig = signingConfigs.getByName("published")
+            signingConfig = signingConfigs.getByName("debugKey")
             isMinifyEnabled = false
         }
         release {
-            if (hasPublishedSigning) signingConfig = signingConfigs.getByName("published")
+            signingConfig = signingConfigs.getByName("debugKey")
             isMinifyEnabled = false
         }
     }
@@ -52,7 +42,6 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
-
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")

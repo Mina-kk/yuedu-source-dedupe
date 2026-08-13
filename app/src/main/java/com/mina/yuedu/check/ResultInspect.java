@@ -73,6 +73,14 @@ public final class ResultInspect {
     return new Hit(true, "book page", urls);
   }
 
+  public static Hit inspectContent(String body, SourceKind kind) {
+    if (kind == SourceKind.COMIC) return inspectMedia(body, "jpg", "jpeg", "png", "webp", "gif", "bmp");
+    if (kind == SourceKind.VIDEO) return inspectMedia(body, "m3u8", "mp4", "flv", "m3u", "mkv", "ts");
+    if (kind == SourceKind.AUDIO) return inspectMedia(body, "mp3", "m4a", "flac", "aac", "ogg");
+    if (kind == SourceKind.FILE) return inspectMedia(body, "zip", "txt", "epub", "pdf", "rar");
+    return inspectChapterContent(body);
+  }
+
   public static Hit inspectChapterContent(String body) {
     if (body == null || body.trim().isEmpty()) return new Hit(false, "empty", new ArrayList<>());
     String t = body.trim();
@@ -83,6 +91,20 @@ public final class ResultInspect {
         .trim();
     if (text.length() < 30) return new Hit(false, "content too short", new ArrayList<>());
     return new Hit(true, "content", new ArrayList<>());
+  }
+
+  private static Hit inspectMedia(String body, String... exts) {
+    if (body == null || body.trim().isEmpty()) return new Hit(false, "empty", new ArrayList<>());
+    String t = body.trim();
+    String low = t.toLowerCase(Locale.ROOT);
+    if (low.contains("just a moment") && low.contains("cloudflare")) {
+      return new Hit(false, "cloudflare", new ArrayList<>());
+    }
+    for (String ext : exts) {
+      if (low.contains("." + ext)) return new Hit(true, "media " + ext, new ArrayList<>());
+    }
+    if (JSON_URL.matcher(t).find()) return new Hit(true, "media url field", new ArrayList<>());
+    return new Hit(false, "no media", new ArrayList<>());
   }
 
   private static String abs(String url, String base) {

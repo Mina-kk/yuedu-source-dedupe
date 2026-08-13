@@ -21,7 +21,8 @@ public final class FetchManager {
     public synchronized boolean isDone(){ return (pending.isEmpty()&&inFlight==0) || (cancelled&&inFlight==0); }
     public synchronized FetchProgress progress(){ return new FetchProgress(total, completed, succeeded, failed, sources, !isDone(), cancelled); }
   }
-  // Network JSON is requested directly from the user-provided URL.
+  private static final String PROXY_HOST = "127.0.0.1";
+  private static final int PROXY_PORT = 3388;
   private final Set<HttpURLConnection> active=Collections.synchronizedSet(new HashSet<>());
   private volatile QueueState state; private volatile FetchListener listener; private final AtomicInteger workers=new AtomicInteger();
   private final int maxBytes = 32 * 1024 * 1024;
@@ -60,10 +61,22 @@ public final class FetchManager {
     }catch(Exception e){ return 0; }
   }
   private String fetch(String url) throws Exception {
-    return doFetch(url);
+    Exception directErr = null;
+    try {
+      return doFetch(url, Proxy.NO_PROXY);
+    } catch (Exception e) {
+      directErr = e;
+      if (state != null && state.isCancelled()) throw e;
+    }
+    try {
+      return doFetch(url, new Proxy(Proxy.Type.HTTP, new InetSocketAddress(PROXY_HOST, PROXY_PORT)));
+    } catch (Exception e2) {
+      if (directErr != null) throw directErr;
+      throw e2;
+    }
   }
-  private String doFetch(String url) throws Exception {
-    HttpURLConnection c = open(url);
+  private String doFetch(String url, Proxy proxy) throws Exception {
+    HttpURLConnection c = open(url, proxy);
     active.add(c);
     try{
       int code = c.getResponseCode();
@@ -74,7 +87,7 @@ public final class FetchManager {
         if (loc == null || loc.trim().isEmpty()) break;
         URL next = new URL(c.getURL(), loc);
         active.remove(c); c.disconnect();
-        c = open(next.toString());
+        c = open(next.toString(), proxy);
         active.add(c);
         code = c.getResponseCode();
         hops++;
@@ -92,8 +105,8 @@ public final class FetchManager {
       } finally { in.close(); }
     } finally { active.remove(c); c.disconnect(); }
   }
-  private HttpURLConnection open(String url) throws Exception {
-    HttpURLConnection c=(HttpURLConnection) new URL(url).openConnection();
+  private HttpURLConnection open(String url, Proxy proxy) throws Exception {
+    HttpURLConnection c=(HttpURLConnection) new URL(url).openConnection(proxy);
     c.setConnectTimeout(20000);
     c.setReadTimeout(90000);
     c.setInstanceFollowRedirects(true);
