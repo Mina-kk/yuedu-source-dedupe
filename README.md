@@ -99,8 +99,8 @@ APK 在 [GitHub Releases](https://github.com/Mina-kk/yuedu-source-dedupe/release
 
 ```text
 文件：yuedu-3.0.2-md3.apk
-大小：6,822,453 字节
-SHA-256：45bb2dd171df342a2eca8a0d37891c24d7a7bcd07515418af2a358c835de4f2a
+大小：6,822,476 字节
+SHA-256：c4db83abc5b1cc1eca14769a09adaa71f9d4f9b941e71d5a1a3294c9e494ea18
 签名证书 SHA-1：4b8fda609b4a959f0b93937b14ef42ead81fae54
 ```
 
