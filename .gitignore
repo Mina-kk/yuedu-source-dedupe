@@ -1,38 +1,9 @@
-# Build output
 .gradle/
 **/build/
-bin/
-dist/
-test-bin/
-*.apk
-*.idsig
-*.aab
-
-# Local Android / Java configuration
 local.properties
+keystore/
+*.apk
 .idea/
 *.iml
-
-# Signing material and secrets
-keystore/
-*.jks
-*.keystore
-*.p12
-*.pem
-*.key
-.env
-.env.*
-
-# Logs and temporary files
-*.log
-*.tmp
-*.part
-
-# Editor / OS
-.vscode/
 .DS_Store
-Thumbs.db
-
-# Local tooling
-.worktrees/
-.superpowers/
+*.log

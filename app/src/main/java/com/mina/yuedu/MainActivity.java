@@ -78,6 +78,7 @@ public class MainActivity extends AppCompatActivity {
   private final Runnable elapsedTick = new Runnable() {
     @Override public void run() {
       refreshElapsedView();
+      flushCheckUi(false);
       if (checkClock.isRunning()) elapsedHandler.postDelayed(this, 250);
     }
   };
@@ -92,6 +93,11 @@ public class MainActivity extends AppCompatActivity {
   private boolean fetchRunning, checkRunning, checkCancelRequested;
   private int concurrency = 4, localFileCount, currentTab;
   private long lastCheckElapsedMs;
+  private volatile CheckSourceSettings uiCheckSettings;
+  private volatile int uiCheckDone, uiCheckTotal, uiCheckInFlight, uiCheckRound, uiCheckRounds;
+  private int uiCheckProgressPct = -1;
+  private volatile String uiCheckExtra = "";
+  private volatile boolean uiCheckDirty;
   private final CheckSourceSettings checkSettings = new CheckSourceSettings();
   private String pendingSave, backgroundTaskText = "";
   private YckSite yckSite = YckSite.MAIN;
@@ -294,6 +300,7 @@ public class MainActivity extends AppCompatActivity {
   private void startFetch(List<String> urls, boolean followUp) {
     fetchRunning = true;
     checkRunning = false;
+    uiCheckProgressPct = -1;
     btnStop.setEnabled(true);
     btnStop.setText("停止解析");
     updateBackgroundTask("后台解析 0 / " + urls.size());
@@ -305,11 +312,15 @@ public class MainActivity extends AppCompatActivity {
       @Override public void onProgress(FetchProgress p) {
         runOnUiThread(() -> {
           int total = Math.max(1, p.getTotal());
-          progressBar.setProgressCompat(p.getCompleted() * 100 / total, true);
-          tvProgress.setText("正在解析书源    " + p.getCompleted() + " / " + p.getTotal());
+          int pct = p.getCompleted() * 100 / total;
+          if (pct != uiCheckProgressPct) {
+            uiCheckProgressPct = pct;
+            progressBar.setProgressCompat(pct, false);
+          }
+          setTextIfChanged(tvProgress, "正在解析书源 " + p.getCompleted() + " / " + p.getTotal());
           String status = "成功 " + p.getSucceeded() + " · 失败 " + p.getFailed() + " · 已发现 " + p.getDiscoveredSources() + " 条";
           if (p.getRetrying() > 0) status += " · 慢网重试中";
-          tvStatus.setText(status);
+          setTextIfChanged(tvStatus, status);
           updateBackgroundTask("后台解析 " + p.getCompleted() + " / " + p.getTotal());
         });
       }
@@ -370,7 +381,8 @@ public class MainActivity extends AppCompatActivity {
     checkCancelRequested = true;
     btnStop.setEnabled(false);
     btnStop.setText("正在停止…");
-    tvStatus.setText("正在停止校验，请稍候…");
+    uiCheckExtra = "正在停止校验，请稍候…";
+    flushCheckUi(true);
     checkEngine.cancel();
   }
 
@@ -670,32 +682,18 @@ public class MainActivity extends AppCompatActivity {
     btnStop.setText("停止校验");
     btnStop.setEnabled(true);
     startElapsedTicker();
-    updateBackgroundTask("后台校验 0 / " + targets.size());
-    tvProgress.setText("正在校验书源 0 / " + targets.size());
-    tvStatus.setText("超时 " + settings.timeoutSeconds + "s · 并发 " + settings.concurrency
-        + " · 探测 " + settings.probeRounds + " 轮 · 关键词 " + settings.keyword);
-    progressBar.setProgressCompat(0, false);
+    resetCheckUiCache(settings, targets.size());
+    flushCheckUi(true);
     final CheckSourceEngine engine = new CheckSourceEngine(settings.concurrency);
     checkEngine = engine;
     new Thread(() -> {
       CheckSourceEngine.Listener listener = new CheckSourceEngine.Listener() {
         @Override public void onProgress(int done, int total, String currentName) {
-          runOnUiThread(() -> {
-            progressBar.setProgressCompat(done * 100 / Math.max(1, total), true);
-            tvProgress.setText("正在校验书源 " + done + " / " + total);
-            String why = done >= total
-                ? "源已探完，正在汇总同域最快结果"
-                : (currentName == null ? "" : currentName);
-            tvStatus.setText(checkStatusLine(settings, why));
-            updateBackgroundTask("后台校验 " + done + " / " + total);
-          });
+          noteCheckProgress(done, total, currentName);
         }
         @Override public void onProbe(SourceRecord source, int round, int rounds, int inFlight) {
           String name = source == null || source.getName() == null ? "书源" : source.getName();
-          runOnUiThread(() -> {
-            tvStatus.setText(checkStatusLine(settings,
-                "并发 " + inFlight + " 条进行中 · " + name + " 第 " + round + "/" + rounds + " 轮"));
-          });
+          noteCheckProbe(name, round, rounds, inFlight);
         }
         @Override public void onItem(CheckSourceResult r) {}
         @Override public void onFinished(List<CheckSourceResult> results) {
@@ -703,9 +701,9 @@ public class MainActivity extends AppCompatActivity {
           FastestUsableDedupe.Outcome outcome = null;
           if (results != null && !results.isEmpty()) {
             runOnUiThread(() -> {
-              tvProgress.setText("正在按已测中位耗时汇总同域最快");
-              tvStatus.setText(checkStatusLine(settings,
-                  "收尾不再重打 HTTP，避免进度完成后又卡很久"));
+              uiCheckExtra = "收尾不再重打 HTTP，避免进度完成后又卡很久";
+              setTextIfChanged(tvProgress, "正在按已测中位耗时汇总同域最快");
+              setTextIfChanged(tvStatus, checkStatusLine(settings, uiCheckExtra));
               updateBackgroundTask("汇总同域最快");
             });
             outcome = FastestUsableDedupe.apply(targets, results, settings.probeRounds, null);
@@ -740,16 +738,74 @@ public class MainActivity extends AppCompatActivity {
     }, "source-check").start();
   }
 
+  private void resetCheckUiCache(CheckSourceSettings settings, int total) {
+    uiCheckSettings = settings;
+    uiCheckDone = 0;
+    uiCheckTotal = total;
+    uiCheckInFlight = 0;
+    uiCheckRound = 0;
+    uiCheckRounds = settings == null ? 0 : settings.probeRounds;
+    uiCheckExtra = "";
+    uiCheckProgressPct = -1;
+    uiCheckDirty = true;
+  }
+
+  private void noteCheckProgress(int done, int total, String currentName) {
+    uiCheckDone = done;
+    uiCheckTotal = total;
+    if (done >= total) {
+      uiCheckExtra = "源已探完，正在汇总同域最快结果";
+    }
+    uiCheckDirty = true;
+  }
+
+  private void noteCheckProbe(String name, int round, int rounds, int inFlight) {
+    uiCheckRound = round;
+    uiCheckRounds = rounds;
+    uiCheckInFlight = inFlight;
+    uiCheckExtra = "";
+    uiCheckDirty = true;
+  }
+
+  private void flushCheckUi(boolean force) {
+    if (!checkRunning || uiCheckSettings == null) return;
+    if (!force && !uiCheckDirty) return;
+    uiCheckDirty = false;
+    int total = Math.max(1, uiCheckTotal);
+    int pct = uiCheckDone * 100 / total;
+    if (force || pct != uiCheckProgressPct) {
+      uiCheckProgressPct = pct;
+      progressBar.setProgressCompat(pct, false);
+    }
+    setTextIfChanged(tvProgress, "正在校验书源 " + uiCheckDone + " / " + uiCheckTotal);
+    setTextIfChanged(tvStatus, checkStatusLine(uiCheckSettings, liveCheckExtra()));
+    updateBackgroundTask("后台校验 " + uiCheckDone + " / " + uiCheckTotal);
+  }
+
+  private static void setTextIfChanged(TextView view, String text) {
+    if (view == null || text == null) return;
+    CharSequence cur = view.getText();
+    if (cur != null && text.contentEquals(cur)) return;
+    view.setText(text);
+  }
+
+  private String liveCheckExtra() {
+    if (uiCheckExtra != null && !uiCheckExtra.isEmpty()) return uiCheckExtra;
+    StringBuilder sb = new StringBuilder();
+    int flying = Math.max(0, uiCheckInFlight);
+    sb.append("进行中 ").append(flying).append(" 条");
+    if (uiCheckRound > 0 && uiCheckRounds > 0) {
+      sb.append(" · 第 ").append(uiCheckRound).append("/").append(uiCheckRounds).append(" 轮");
+    }
+    return sb.toString();
+  }
+
   private String checkStatusLine(CheckSourceSettings settings, String extra) {
     StringBuilder sb = new StringBuilder();
     sb.append("超时 ").append(settings.timeoutSeconds).append("s");
     sb.append(" · 并发 ").append(settings.concurrency);
     sb.append(" · 探测 ").append(settings.probeRounds).append(" 轮");
-    if (extra != null && !extra.trim().isEmpty()) sb.append(" · ").append(extra.trim());
-    long elapsedMs = checkClock.elapsed(System.currentTimeMillis());
-    if (elapsedMs >= 60_000L) {
-      sb.append(" · 过慢常见原因：死站仍要等超时、10 轮探测");
-    }
+    if (extra != null && !extra.trim().isEmpty()) sb.append("\n").append(extra.trim());
     return sb.toString();
   }
 
@@ -779,9 +835,9 @@ public class MainActivity extends AppCompatActivity {
     String text = getString(R.string.check_elapsed, formatElapsed(Math.max(0L, ms)));
     if (tvElapsed != null) {
       if (checkClock.isRunning()) {
-        tvElapsed.setVisibility(View.VISIBLE);
-        tvElapsed.setText(text);
-      } else {
+        if (tvElapsed.getVisibility() != View.VISIBLE) tvElapsed.setVisibility(View.VISIBLE);
+        setTextIfChanged(tvElapsed, text);
+      } else if (tvElapsed.getVisibility() != View.GONE) {
         tvElapsed.setVisibility(View.GONE);
       }
     }
