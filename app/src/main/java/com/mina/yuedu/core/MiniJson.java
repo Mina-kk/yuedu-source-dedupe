@@ -2,7 +2,11 @@ package com.mina.yuedu.core;
 import java.util.*;
 public final class MiniJson {
  private final String s;private int p;private MiniJson(String s){this.s=s;}
- public static Object parse(String s){MiniJson j=new MiniJson(s);Object v=j.value();j.ws();if(j.p!=s.length())throw new IllegalArgumentException("trailing JSON");return v;}
+ public static Object parse(String s){
+   if(s==null) throw new IllegalArgumentException("null JSON");
+   if(!s.isEmpty() && s.charAt(0)=='\uFEFF') s=s.substring(1);
+   MiniJson j=new MiniJson(s);Object v=j.value();j.ws();if(j.p!=s.length())throw new IllegalArgumentException("trailing JSON");return v;
+ }
  private Object value(){ws();if(p>=s.length())throw new IllegalArgumentException("unexpected end");char c=s.charAt(p);if(c=='{')return object();if(c=='[')return array();if(c=='"')return string();if(c=='t'&&take("true"))return true;if(c=='f'&&take("false"))return false;if(c=='n'&&take("null"))return null;return number();}
  private Map<String,Object> object(){p++;Map<String,Object> m=new LinkedHashMap<>();ws();if(ch('}'))return m;do{ws();String k=string();ws();need(':');m.put(k,value());ws();}while(ch(','));need('}');return m;}
  private List<Object> array(){p++;List<Object> a=new ArrayList<>();ws();if(ch(']'))return a;do{a.add(value());ws();}while(ch(','));need(']');return a;}

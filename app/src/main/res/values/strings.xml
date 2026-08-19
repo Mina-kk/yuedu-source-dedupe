@@ -23,8 +23,12 @@
     <string name="chapter_list">目录</string>
     <string name="source_tab_content">正文</string>
     <string name="import_reader">导入到阅读</string>
+    <string name="choose_reader">选择要导入的阅读</string>
+    <string name="no_reader_installed">未安装支持 legado:// 导入的阅读 App</string>
+    <string name="probe_rounds">探测轮数</string>
     <string name="export_kinds">导入 / 保存范围</string>
     <string name="check_result_title">校验结果</string>
+    <string name="check_elapsed">检验耗时 %1$s</string>
     <string name="save_json">保存 JSON</string>
     <string name="clear_all">清空</string>
     <string name="only_usable">仅导出可用源</string>

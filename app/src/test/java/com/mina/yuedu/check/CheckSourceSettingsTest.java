@@ -7,8 +7,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class CheckSourceSettingsTest {
-  @Test public void concurrencyIsNormalizedToOneThroughOneHundred() {
-    assertEquals(100, CheckSourceSettings.MAX_CONCURRENCY);
+  @Test public void concurrencyIsNormalizedToOneThroughFiveHundred() {
+    assertEquals(500, CheckSourceSettings.MAX_CONCURRENCY);
 
     CheckSourceSettings belowMinimum = new CheckSourceSettings();
     belowMinimum.concurrency = 0;
@@ -16,14 +16,14 @@ public class CheckSourceSettingsTest {
     assertEquals(1, belowMinimum.concurrency);
 
     CheckSourceSettings atMaximum = new CheckSourceSettings();
-    atMaximum.concurrency = 100;
+    atMaximum.concurrency = 500;
     atMaximum.normalize();
-    assertEquals(100, atMaximum.concurrency);
+    assertEquals(500, atMaximum.concurrency);
 
     CheckSourceSettings aboveMaximum = new CheckSourceSettings();
-    aboveMaximum.concurrency = 101;
+    aboveMaximum.concurrency = 501;
     aboveMaximum.normalize();
-    assertEquals(100, aboveMaximum.concurrency);
+    assertEquals(500, aboveMaximum.concurrency);
   }
 
   @Test public void defaultConcurrencyRemainsEight() {
@@ -31,6 +31,24 @@ public class CheckSourceSettingsTest {
     settings.normalize();
     assertEquals(8, settings.concurrency);
     assertTrue(settings.concurrency <= CheckSourceSettings.MAX_CONCURRENCY);
+  }
+
+  @Test public void probeRoundsDefaultAndCapAtTen() {
+    CheckSourceSettings settings = new CheckSourceSettings();
+    settings.normalize();
+    assertEquals(10, settings.probeRounds);
+    assertEquals(10, CheckSourceSettings.DEFAULT_PROBE_ROUNDS);
+    assertEquals(10, CheckSourceSettings.MAX_PROBE_ROUNDS);
+
+    CheckSourceSettings zero = new CheckSourceSettings();
+    zero.probeRounds = 0;
+    zero.normalize();
+    assertEquals(1, zero.probeRounds);
+
+    CheckSourceSettings over = new CheckSourceSettings();
+    over.probeRounds = 11;
+    over.normalize();
+    assertEquals(10, over.probeRounds);
   }
 
   @Test public void blankKeywordFallsBackToDefault() {
@@ -90,7 +108,8 @@ public class CheckSourceSettingsTest {
   @Test public void resetToDefaultsRestoresKeywordTimeoutAndKinds() {
     CheckSourceSettings settings = new CheckSourceSettings();
     settings.timeoutSeconds = 30;
-    settings.concurrency = 100;
+    settings.concurrency = 500;
+    settings.probeRounds = 3;
     settings.keyword = "斗破苍穹";
     settings.checkSearch = false;
     settings.checkNovel = false;
@@ -98,6 +117,7 @@ public class CheckSourceSettingsTest {
     settings.resetToDefaults();
     assertEquals(180, settings.timeoutSeconds);
     assertEquals(8, settings.concurrency);
+    assertEquals(10, settings.probeRounds);
     assertEquals("我的", settings.keyword);
     assertTrue(settings.checkSearch);
     assertTrue(settings.checkNovel);

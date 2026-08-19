@@ -1,4 +1,5 @@
 package com.mina.yuedu.core;
+import com.mina.yuedu.check.SourceKind;
 import com.mina.yuedu.model.*;
 import java.util.*;
 public final class DedupeEngine {
@@ -11,7 +12,7 @@ public final class DedupeEngine {
       if(u==null){ invalid.add(new InvalidSource(InvalidSource.Kind.MISSING_URL, s.getName())); continue; }
       if(u.trim().isEmpty()){ invalid.add(new InvalidSource(InvalidSource.Kind.EMPTY_URL, s.getName())); continue; }
       try{
-        String k=UrlNormalizer.key(u, mode);
+        String k=SourceKind.of(s).name()+"|"+UrlNormalizer.key(u, mode);
         SourceRecord v=clean? s.withName(NameCleaner.clean(s.getName())) : s;
         buckets.computeIfAbsent(k, x->new ArrayList<>()).add(v);
       }catch(Exception e){ invalid.add(new InvalidSource(InvalidSource.Kind.INVALID_URL, u)); }
@@ -44,7 +45,7 @@ public final class DedupeEngine {
     return n;
   }
   private static String reason(DedupeMode m){
-    if(m==DedupeMode.AGGRESSIVE) return "激进模式下域名相同";
+    if(m==DedupeMode.AGGRESSIVE) return "同类型同域名相同";
     if(m==DedupeMode.STANDARD) return "标准化书源 URL 相同（已剥离跟踪参数）";
     return "规范化书源 URL 相同";
   }

@@ -4,58 +4,73 @@ import com.mina.yuedu.core.UrlNormalizer;
 import com.mina.yuedu.model.SourceRecord;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CancellationException;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Check pipeline aligned with legado CheckSourceService semantics.
  * Phase-2: real HTTP for search/discovery, then opportunistic info/toc/content
  * URL chaining when response yields candidate links. JS-heavy sources are
  * marked js失效 when URL construction requires JS and no static URL remains.
+ *
+ * Layer-1 N-round probes run serially on the same worker. The pool is bounded
+ * to the concurrency cap so 500 workers are not multiplied by extra per-source
+ * executors.
  */
 public final class CheckSourceEngine {
   public interface Listener {
     void onProgress(int done, int total, String currentName);
+    void onProbe(SourceRecord source, int round, int rounds, int inFlight);
     void onItem(CheckSourceResult result);
     void onFinished(List<CheckSourceResult> results);
   }
 
+  private static final long SITE_CACHE_TTL_MS = 30_000L;
+
   private final ExecutorService pool;
-  private final Set<Future<?>> runningChecks = Collections.synchronizedSet(new HashSet<>());
   private volatile boolean cancelled;
+  private volatile Listener activeListener;
+  private final AtomicInteger inFlight = new AtomicInteger();
+  private final Map<String, CachedSite> siteCache = Collections.synchronizedMap(new HashMap<String, CachedSite>());
 
   public CheckSourceEngine(int concurrency) {
-    pool = Executors.newFixedThreadPool(Math.max(1,
-        Math.min(CheckSourceSettings.MAX_CONCURRENCY, concurrency)));
+    int n = Math.max(1, Math.min(CheckSourceSettings.MAX_CONCURRENCY, concurrency));
+    pool = new ThreadPoolExecutor(
+        n, n,
+        30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<Runnable>(Math.max(n * 4, 64)),
+        new ThreadPoolExecutor.CallerRunsPolicy());
   }
 
   public boolean isCancelled() { return cancelled; }
 
   public void cancel() {
     cancelled = true;
-    synchronized (runningChecks) {
-      for (Future<?> future : new ArrayList<>(runningChecks)) future.cancel(true);
-      runningChecks.clear();
-    }
     HttpProbe.cancelAll();
-    // 不在这里 shutdownNow：队列任务需要启动后看到 cancelled 并递减 latch，
-    // 否则 checkAll 会永久等待尚未开始的任务。
+    // Do not shutdownNow here: queued tasks must still start, see cancelled,
+    // and decrement the latch. Otherwise checkAll waits forever.
+  }
+
+  public void close() {
+    cancelled = true;
+    pool.shutdownNow();
+    HttpProbe.cancelAll();
   }
 
   public void checkAll(List<SourceRecord> sources, CheckSourceSettings settings, Listener listener) {
     settings.normalize();
-    List<CheckSourceResult> out = Collections.synchronizedList(new ArrayList<>());
+    activeListener = listener;
+    List<CheckSourceResult> out = Collections.synchronizedList(new ArrayList<CheckSourceResult>());
     AtomicDone done = new AtomicDone();
-    int total = sources.size();
+    int total = sources == null ? 0 : sources.size();
     if (total == 0) {
       listener.onFinished(out);
       pool.shutdownNow();
@@ -63,7 +78,8 @@ public final class CheckSourceEngine {
     }
     CountDownLatch latch = new CountDownLatch(total);
     for (SourceRecord s : sources) {
-      pool.execute(() -> {
+      Runnable task = () -> {
+        inFlight.incrementAndGet();
         try {
           if (cancelled) return;
           CheckSourceResult r = checkOne(s, settings);
@@ -72,53 +88,75 @@ public final class CheckSourceEngine {
             listener.onItem(r);
           }
         } finally {
+          inFlight.decrementAndGet();
           int d = done.inc();
           if (!cancelled) listener.onProgress(d, total, s.getName());
           latch.countDown();
         }
-      });
+      };
+      try {
+        pool.execute(task);
+      } catch (RejectedExecutionException e) {
+        task.run();
+      }
     }
     try {
       latch.await();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    } finally {
-      pool.shutdownNow();
-      HttpProbe.cancelAll();
     }
-    listener.onFinished(new ArrayList<>(out));
+    listener.onFinished(new ArrayList<CheckSourceResult>(out));
   }
 
-  private CheckSourceResult checkOne(SourceRecord source, CheckSourceSettings settings) {
-    long start = System.currentTimeMillis();
+  public CheckSourceResult checkOne(SourceRecord source, CheckSourceSettings settings) {
+    settings.normalize();
     SourceKind kind = SourceKind.of(source);
     if (!settings.allows(kind)) {
       return new CheckSourceResult(source, CheckSourceResult.Status.SKIPPED, new ArrayList<String>(),
-          "跳过类型", 0, kind);
+          "跳过类型", 0, kind, 0, 0, 0, 0, 0);
     }
-    List<String> groups = new ArrayList<>();
-    ExecutorService one = Executors.newSingleThreadExecutor();
-    Future<List<String>> future = null;
+    if (!UrlNormalizer.isHttpUrl(source.getUrl())) {
+      List<String> groups = new ArrayList<String>();
+      groups.add("网站失效");
+      return new CheckSourceResult(source, CheckSourceResult.Status.SKIPPED, groups,
+          "非 HTTP(S) 源，不参与最快竞争", 0, kind, 0, 0, 0, 0, 0);
+    }
+    int rounds = settings.probeRounds;
+    List<CheckSourceResult> collected = new ArrayList<CheckSourceResult>(rounds);
+    int success = 0;
+    for (int i = 0; i < rounds; i++) {
+      if (cancelled || Thread.currentThread().isInterrupted()) return null;
+      notifyProbe(source, i + 1, rounds);
+      CheckSourceResult once = doCheckOnce(source, settings, kind);
+      if (once == null) return null;
+      collected.add(once);
+      if (once.status == CheckSourceResult.Status.SUCCESS) success++;
+      if (once.groups != null && (once.groups.contains("网站失效") || once.groups.contains("校验超时"))) {
+        break;
+      }
+      if (CheckAggregator.decided(rounds, success, collected.size())) break;
+    }
+    return CheckAggregator.combine(source, kind, rounds, collected);
+  }
+
+  private void notifyProbe(SourceRecord source, int round, int rounds) {
+    Listener listener = activeListener;
+    if (listener == null) return;
     try {
-      if (cancelled) return null;
-      future = one.submit(() -> doCheck(source, settings, kind));
-      runningChecks.add(future);
-      if (cancelled) {
-        future.cancel(true);
-        return null;
-      }
-      try {
-        groups.addAll(future.get(settings.timeoutMillis(), TimeUnit.MILLISECONDS));
-      } catch (TimeoutException te) {
-        future.cancel(true);
-        groups.add("校验超时");
-        return new CheckSourceResult(source, CheckSourceResult.Status.TIMEOUT, groups, "timeout",
-            System.currentTimeMillis() - start, kind);
-      } catch (CancellationException ce) {
-        return null;
-      }
+      listener.onProbe(source, round, rounds, inFlight.get());
+    } catch (Exception ignored) {}
+  }
+
+  private CheckSourceResult doCheckOnce(SourceRecord source, CheckSourceSettings settings, SourceKind kind) {
+    long start = System.currentTimeMillis();
+    List<String> groups = new ArrayList<String>();
+    try {
+      groups.addAll(doCheck(source, settings, kind));
       if (cancelled || Thread.currentThread().isInterrupted()) return null;
       long cost = System.currentTimeMillis() - start;
+      if (groups.contains("校验超时")) {
+        return new CheckSourceResult(source, CheckSourceResult.Status.TIMEOUT, groups, "timeout", cost, kind);
+      }
       if (groups.isEmpty()) {
         return new CheckSourceResult(source, CheckSourceResult.Status.SUCCESS, groups, "校验成功", cost, kind);
       }
@@ -130,14 +168,11 @@ public final class CheckSourceEngine {
       return new CheckSourceResult(source, CheckSourceResult.Status.FAILED, groups,
           e.getMessage() == null ? "error" : e.getMessage(),
           System.currentTimeMillis() - start, kind);
-    } finally {
-      if (future != null) runningChecks.remove(future);
-      one.shutdownNow();
     }
   }
 
   private List<String> doCheck(SourceRecord source, CheckSourceSettings settings, SourceKind kind) {
-    List<String> bad = new ArrayList<>();
+    List<String> bad = new ArrayList<String>();
     String base;
     try {
       // bookSourceUrl 的 #后缀是书源身份标签，不参与实际 HTTP 请求。
@@ -150,15 +185,11 @@ public final class CheckSourceEngine {
     Map<String, String> headers = HttpProbe.parseSourceHeader(source.rawString("header"));
     int stepTimeout = (int) Math.min(Math.max(settings.timeoutMillis() / 3L, 8000L), 30000L);
 
-    // base host probe
-    try {
-      AnalyzeUrlLite baseReq = AnalyzeUrlLite.parse(base, base, settings.keyword, 1);
-      HttpProbe.Response br = HttpProbe.fetch(baseReq, headers, Math.min(stepTimeout, 10000));
-      if (!br.httpOk()) bad.add("网站失效");
-    } catch (Exception e) {
+    if (!probeSite(base, headers, Math.min(stepTimeout, 10000), settings.keyword)) {
       bad.add("网站失效");
+      return uniq(bad);
     }
-    if (Thread.currentThread().isInterrupted()) return bad;
+    if (Thread.currentThread().isInterrupted() || cancelled) return uniq(bad);
 
     String bookUrl = null;
     String tocUrl = null;
@@ -166,23 +197,12 @@ public final class CheckSourceEngine {
 
     if (settings.checkSearch) {
       String searchUrl = source.rawString("searchUrl");
-      Object ruleSearch = source.getRaw().get("ruleSearch");
       if (searchUrl == null || searchUrl.trim().isEmpty()) {
         bad.add("搜索链接规则为空");
       } else {
         AnalyzeUrlLite req = AnalyzeUrlLite.parse(searchUrl, base, settings.keyword, 1);
         if (req.usesJs && (req.url == null || req.url.trim().isEmpty() || req.url.equals(base))) {
           bad.add("js失效");
-        } else if (!ResultInspect.hasRule(ruleSearch) && !req.usesJs) {
-          // still try network if URL exists
-          try {
-            HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
-            ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
-            if (!r.httpOk() || !hit.ok) bad.add("搜索失效");
-            else if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
-          } catch (Exception e) {
-            bad.add("搜索失效");
-          }
         } else {
           try {
             HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -195,13 +215,12 @@ public final class CheckSourceEngine {
         }
       }
     }
-    if (Thread.currentThread().isInterrupted()) return bad;
+    if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkDiscovery) {
       String explore = source.rawString("exploreUrl");
       Object ruleExplore = source.getRaw().get("ruleExplore");
       if (explore != null && !explore.trim().isEmpty()) {
-        // exploreUrl may be multi-line kinds; take first non-empty line / first kind url
         String first = firstExploreUrl(explore);
         AnalyzeUrlLite req = AnalyzeUrlLite.parse(first, base, settings.keyword, 1);
         if (req.usesJs && (req.url == null || req.url.isEmpty())) {
@@ -219,9 +238,8 @@ public final class CheckSourceEngine {
           }
         }
       }
-      // empty explore is allowed (many sources have no discovery)
     }
-    if (Thread.currentThread().isInterrupted()) return bad;
+    if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     Map<String, Object> ruleInfo = source.ruleMap("ruleBookInfo");
     Map<String, Object> ruleToc = source.ruleMap("ruleToc");
@@ -237,11 +255,7 @@ public final class CheckSourceEngine {
           ResultInspect.Hit hit = ResultInspect.inspectBookPage(r.body);
           if (!r.httpOk() || !hit.ok) bad.add("详情失效");
           else {
-            // prefer tocUrl from response, else book url as toc base
-            if (!hit.bookUrls.isEmpty()) {
-              // may contain toc/chapter candidates
-              tocUrl = hit.bookUrls.get(0);
-            }
+            if (!hit.bookUrls.isEmpty()) tocUrl = hit.bookUrls.get(0);
             String initToc = ResultInspect.ruleString(ruleInfo, "tocUrl");
             if (initToc != null && !initToc.trim().isEmpty() && !initToc.contains("@js") && !initToc.contains("<js>")) {
               AnalyzeUrlLite tocReq = AnalyzeUrlLite.parse(initToc, r.finalUrl != null ? r.finalUrl : bookUrl, settings.keyword, 1);
@@ -254,9 +268,8 @@ public final class CheckSourceEngine {
           bad.add("详情失效");
         }
       }
-      // if only rule present and no bookUrl from search/discovery, keep soft-pass on rule existence
     }
-    if (Thread.currentThread().isInterrupted()) return bad;
+    if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkCategory) {
       if (!ResultInspect.hasRule(ruleToc) && tocUrl == null) {
@@ -273,7 +286,7 @@ public final class CheckSourceEngine {
         }
       }
     }
-    if (Thread.currentThread().isInterrupted()) return bad;
+    if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkContent) {
       String contentFail = kind.contentFailGroup();
@@ -291,24 +304,55 @@ public final class CheckSourceEngine {
       }
     }
 
-    // de-dup groups while preserving order
-    List<String> uniq = new ArrayList<>();
-    for (String g : bad) if (!uniq.contains(g)) uniq.add(g);
-    return uniq;
+    return uniq(bad);
+  }
+
+  private static List<String> uniq(List<String> bad) {
+    List<String> out = new ArrayList<String>();
+    if (bad == null) return out;
+    for (String g : bad) if (g != null && !out.contains(g)) out.add(g);
+    return out;
+  }
+
+  private boolean probeSite(String base, Map<String, String> headers, int timeoutMs, String keyword) {
+    String host;
+    try {
+      host = UrlNormalizer.hostKey(base);
+    } catch (Exception e) {
+      host = base;
+    }
+    long now = System.currentTimeMillis();
+    CachedSite cached = siteCache.get(host);
+    if (cached != null && now - cached.at < SITE_CACHE_TTL_MS) return cached.ok;
+    boolean ok;
+    try {
+      AnalyzeUrlLite baseReq = AnalyzeUrlLite.parse(base, base, keyword, 1);
+      HttpProbe.Response br = HttpProbe.fetch(baseReq, headers, timeoutMs);
+      ok = br.httpOk();
+    } catch (Exception e) {
+      ok = false;
+    }
+    siteCache.put(host, new CachedSite(ok, now));
+    return ok;
   }
 
   private static String firstExploreUrl(String explore) {
     String s = explore.trim();
-    // formats: "name::url\n..." or JSON or plain url
     String[] lines = s.split("\\r?\\n");
     for (String line : lines) {
       String t = line.trim();
       if (t.isEmpty()) continue;
       int sep = t.indexOf("::");
       if (sep >= 0 && sep + 2 < t.length()) return t.substring(sep + 2).trim();
-      if (t.startsWith("http") || t.contains("{{") || t.contains("{{") || t.contains("/")) return t;
+      if (t.startsWith("http") || t.contains("{{") || t.contains("/")) return t;
     }
     return s;
+  }
+
+  private static final class CachedSite {
+    final boolean ok;
+    final long at;
+    CachedSite(boolean ok, long at) { this.ok = ok; this.at = at; }
   }
 
   private static final class AtomicDone {

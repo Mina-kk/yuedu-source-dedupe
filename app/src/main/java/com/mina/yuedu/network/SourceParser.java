@@ -14,7 +14,7 @@ public final class SourceParser {
   public static ParseResult parseArray(String json, int start){
     List<SourceRecord> out=new ArrayList<>(); List<InvalidSource> bad=new ArrayList<>();
     Object root;
-    try{ root=MiniJson.parse(json); }catch(Exception e){ bad.add(new InvalidSource(InvalidSource.Kind.NOT_JSON_ARRAY, e.getMessage())); return new ParseResult(out,bad); }
+    try{ root=MiniJson.parse(unwrapJson(json)); }catch(Exception e){ bad.add(new InvalidSource(InvalidSource.Kind.NOT_JSON_ARRAY, e.getMessage())); return new ParseResult(out,bad); }
     List<?> list;
     if(root instanceof List) list=(List<?>)root;
     else if(root instanceof Map){
@@ -33,6 +33,27 @@ public final class SourceParser {
       out.add(new SourceRecord(start+i, n==null?"":String.valueOf(n), u==null?null:String.valueOf(u), m)); i++;
     }
     return new ParseResult(out,bad);
+  }
+  static String unwrapJson(String raw){
+    if(raw==null) return "";
+    String s=raw;
+    if(!s.isEmpty() && s.charAt(0)=='\uFEFF') s=s.substring(1);
+    int i=0;
+    while(i<s.length() && Character.isWhitespace(s.charAt(i))) i++;
+    if(s.startsWith(")]}'", i)){
+      int nl=s.indexOf('\n', i);
+      s = nl>=0 ? s.substring(nl+1) : s.substring(Math.min(s.length(), i+4));
+    }
+    int arr=s.indexOf('[');
+    int obj=s.indexOf('{');
+    int start=-1;
+    char closer=0;
+    if(arr>=0 && (obj<0 || arr<obj)){ start=arr; closer=']'; }
+    else if(obj>=0){ start=obj; closer='}'; }
+    if(start<0) return s.trim();
+    int end=s.lastIndexOf(closer);
+    if(end>start) return s.substring(start, end+1);
+    return s.substring(start);
   }
   public static String extractIndirectUrl(String body){
     if(body==null) return null;

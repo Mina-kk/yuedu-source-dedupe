@@ -44,4 +44,19 @@ public class UrlNormalizerIdentityTest {
         source(1, "简体", "https://example.com#简体")), DedupeMode.AGGRESSIVE, false);
     assertEquals(1, result.getRetained().size());
   }
+
+  @Test public void aggressiveModeDoesNotMergeNovelAndComic() {
+    Map<String, Object> novel = new LinkedHashMap<String, Object>();
+    novel.put("bookSourceName", "小说");
+    novel.put("bookSourceUrl", "https://example.com");
+    novel.put("bookSourceType", 0);
+    Map<String, Object> comic = new LinkedHashMap<String, Object>();
+    comic.put("bookSourceName", "漫画");
+    comic.put("bookSourceUrl", "https://example.com");
+    comic.put("bookSourceType", 2);
+    DedupeResult result = DedupeEngine.run(Arrays.asList(
+        new SourceRecord(0, "小说", "https://example.com", novel),
+        new SourceRecord(1, "漫画", "https://example.com", comic)), DedupeMode.AGGRESSIVE, false);
+    assertEquals(2, result.getRetained().size());
+  }
 }

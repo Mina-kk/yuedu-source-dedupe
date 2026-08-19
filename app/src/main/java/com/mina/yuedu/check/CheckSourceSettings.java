@@ -1,9 +1,11 @@
 package com.mina.yuedu.check;
 
 public final class CheckSourceSettings {
-  public static final int MAX_CONCURRENCY = 100;
+  public static final int MAX_CONCURRENCY = 500;
   public static final int DEFAULT_TIMEOUT = 180;
   public static final int DEFAULT_CONCURRENCY = 8;
+  public static final int DEFAULT_PROBE_ROUNDS = 10;
+  public static final int MAX_PROBE_ROUNDS = 10;
   public static final String DEFAULT_KEYWORD = "我的";
 
   public long timeoutSeconds = DEFAULT_TIMEOUT;
@@ -14,6 +16,7 @@ public final class CheckSourceSettings {
   public boolean checkContent = true;
   public String keyword = DEFAULT_KEYWORD;
   public int concurrency = DEFAULT_CONCURRENCY;
+  public int probeRounds = DEFAULT_PROBE_ROUNDS;
   public boolean checkNovel = true;
   public boolean checkComic = true;
   public boolean checkVideo = true;
@@ -29,6 +32,7 @@ public final class CheckSourceSettings {
     checkContent = true;
     keyword = DEFAULT_KEYWORD;
     concurrency = DEFAULT_CONCURRENCY;
+    probeRounds = DEFAULT_PROBE_ROUNDS;
     checkNovel = true;
     checkComic = true;
     checkVideo = true;
@@ -44,6 +48,8 @@ public final class CheckSourceSettings {
     if (!checkCategory) checkContent = false;
     if (concurrency < 1) concurrency = 1;
     if (concurrency > MAX_CONCURRENCY) concurrency = MAX_CONCURRENCY;
+    if (probeRounds < 1) probeRounds = 1;
+    if (probeRounds > MAX_PROBE_ROUNDS) probeRounds = MAX_PROBE_ROUNDS;
     if (keyword == null || keyword.trim().isEmpty()) keyword = DEFAULT_KEYWORD;
     else keyword = keyword.trim();
     if (!checkNovel && !checkComic && !checkVideo && !checkAudio && !checkFile) {
@@ -64,4 +70,23 @@ public final class CheckSourceSettings {
   }
 
   public long timeoutMillis() { return timeoutSeconds * 1000L; }
+
+  public CheckSourceSettings copy() {
+    CheckSourceSettings s = new CheckSourceSettings();
+    s.timeoutSeconds = timeoutSeconds;
+    s.checkSearch = checkSearch;
+    s.checkDiscovery = checkDiscovery;
+    s.checkInfo = checkInfo;
+    s.checkCategory = checkCategory;
+    s.checkContent = checkContent;
+    s.keyword = keyword;
+    s.concurrency = concurrency;
+    s.probeRounds = probeRounds;
+    s.checkNovel = checkNovel;
+    s.checkComic = checkComic;
+    s.checkVideo = checkVideo;
+    s.checkAudio = checkAudio;
+    s.checkFile = checkFile;
+    return s;
+  }
 }

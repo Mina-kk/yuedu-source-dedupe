@@ -24,12 +24,24 @@ public final class HttpProbe {
     public Response(int code, String body, String finalUrl, long millis) {
       this.code = code; this.body = body; this.finalUrl = finalUrl; this.millis = millis;
     }
-    public boolean httpOk() { return code >= 200 && code < 500; }
+    public boolean httpOk() { return HttpProbe.httpOk(code, body); }
     public boolean hasBody() { return body != null && !body.trim().isEmpty(); }
   }
 
   private static final int MAX = 2 * 1024 * 1024;
   private static final Set<HttpURLConnection> ACTIVE = Collections.synchronizedSet(new HashSet<>());
+
+  public static boolean httpOk(int code, String body) {
+    if (code < 200 || code >= 400) return false;
+    if (body == null || body.trim().isEmpty()) return false;
+    return !isCloudflareChallenge(body);
+  }
+
+  public static boolean isCloudflareChallenge(String body) {
+    if (body == null) return false;
+    String low = body.toLowerCase(Locale.ROOT);
+    return low.contains("just a moment") && low.contains("cloudflare");
+  }
 
   public static void cancelAll() {
     synchronized (ACTIVE) {

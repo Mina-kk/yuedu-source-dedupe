@@ -7,6 +7,10 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.provider.OpenableColumns;
 import android.view.*;
 import android.webkit.*;
@@ -42,6 +46,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainActivity extends AppCompatActivity {
   private View dedupePage;
@@ -50,7 +55,8 @@ public class MainActivity extends AppCompatActivity {
   private FrameLayout pageContainer;
   private TabLayout tabs;
   private TextInputEditText etUrls;
-  private TextView tvLocalStatus, tvModeDesc, tvProgress, tvStatus, tvStats, tvCheckStats;
+  private TextView tvLocalStatus, tvModeDesc, tvElapsed, tvProgress, tvStatus, tvStats, tvCheckElapsed, tvCheckStats;
+  private volatile String urlBoxSnapshot = "";
   private View cardRunning, cardResult;
   private LinearLayout boxKindExport, rowCheckTiles;
   private TextView tvExportPreview;
@@ -59,20 +65,33 @@ public class MainActivity extends AppCompatActivity {
   private MaterialSwitch switchCleanNames, switchOnlyUsable;
   private MaterialButtonToggleGroup modeGroup;
   private Slider sliderConcurrency;
+  private TextView tvFetchConcurrencyLabel;
   private MaterialButton btnParse, btnStop, btnCheck, btnImport, btnSave;
 
   private final SourceBuckets buckets = new SourceBuckets();
+  private final UrlInbox urlInbox = new UrlInbox();
   private final List<InvalidSource> extraInvalid = new ArrayList<>();
   private final List<String> discovered = new ArrayList<>();
+  private final AtomicInteger nextOrderSeq = new AtomicInteger();
+  private final Handler elapsedHandler = new Handler(Looper.getMainLooper());
+  private final ElapsedClock checkClock = new ElapsedClock();
+  private final Runnable elapsedTick = new Runnable() {
+    @Override public void run() {
+      refreshElapsedView();
+      if (checkClock.isRunning()) elapsedHandler.postDelayed(this, 250);
+    }
+  };
   private final OperationMode operationMode = new OperationMode(DedupeMode.STANDARD);
   private DedupeMode mode = DedupeMode.STANDARD;
   private DedupeResult result;
   private List<CheckSourceResult> checkResults = new ArrayList<>();
+  private FastestUsableDedupe.Outcome fastestOutcome;
   private FetchManager fetchManager;
   private CheckSourceEngine checkEngine;
   private boolean cleanNames, partial, discard, onlyUsable;
   private boolean fetchRunning, checkRunning, checkCancelRequested;
-  private int concurrency = 4, nextOrder, localFileCount, currentTab;
+  private int concurrency = 4, localFileCount, currentTab;
+  private long lastCheckElapsedMs;
   private final CheckSourceSettings checkSettings = new CheckSourceSettings();
   private String pendingSave, backgroundTaskText = "";
   private YckSite yckSite = YckSite.MAIN;
@@ -157,11 +176,20 @@ public class MainActivity extends AppCompatActivity {
 
   private void bindDedupe(View root) {
     etUrls = root.findViewById(R.id.etUrls);
+    etUrls.addTextChangedListener(new TextWatcher() {
+      @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+      @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+      @Override public void afterTextChanged(Editable s) {
+        urlBoxSnapshot = s == null ? "" : s.toString();
+      }
+    });
     tvLocalStatus = root.findViewById(R.id.tvLocalStatus);
     tvModeDesc = root.findViewById(R.id.tvModeDesc);
+    tvElapsed = root.findViewById(R.id.tvElapsed);
     tvProgress = root.findViewById(R.id.tvProgress);
     tvStatus = root.findViewById(R.id.tvStatus);
     tvStats = root.findViewById(R.id.tvStats);
+    tvCheckElapsed = root.findViewById(R.id.tvCheckElapsed);
     tvCheckStats = root.findViewById(R.id.tvCheckStats);
     boxKindExport = root.findViewById(R.id.boxKindExport);
     rowCheckTiles = root.findViewById(R.id.rowCheckTiles);
@@ -186,6 +214,7 @@ public class MainActivity extends AppCompatActivity {
     switchOnlyUsable = root.findViewById(R.id.switchOnlyUsable);
     modeGroup = root.findViewById(R.id.modeGroup);
     sliderConcurrency = root.findViewById(R.id.sliderConcurrency);
+    tvFetchConcurrencyLabel = root.findViewById(R.id.tvFetchConcurrencyLabel);
     btnParse = root.findViewById(R.id.btnParse);
     btnStop = root.findViewById(R.id.btnStop);
     btnCheck = root.findViewById(R.id.btnCheck);
@@ -203,7 +232,15 @@ public class MainActivity extends AppCompatActivity {
       updateModeDesc();
       if (result != null) recompute(partial);
     });
-    sliderConcurrency.addOnChangeListener((s, value, fromUser) -> concurrency = Math.round(value));
+    sliderConcurrency.setValueFrom(1);
+    sliderConcurrency.setValueTo(FetchManager.MAX_CONCURRENCY);
+    float fetchConc = Math.max(1, Math.min(FetchManager.MAX_CONCURRENCY, concurrency));
+    sliderConcurrency.setValue(fetchConc);
+    updateFetchConcurrencyLabel(Math.round(fetchConc));
+    sliderConcurrency.addOnChangeListener((s, value, fromUser) -> {
+      concurrency = Math.round(value);
+      updateFetchConcurrencyLabel(concurrency);
+    });
     switchCleanNames.setOnCheckedChangeListener((b, on) -> { cleanNames = on; if (result != null) recompute(partial); });
     switchOnlyUsable.setOnCheckedChangeListener((b, on) -> { onlyUsable = on; refreshExportPreview(); });
     btnParse.setOnClickListener(v -> startParse());
@@ -215,23 +252,40 @@ public class MainActivity extends AppCompatActivity {
 
   private void updateModeDesc() { tvModeDesc.setText(mode.description()); }
 
+  private void updateFetchConcurrencyLabel(int value) {
+    if (tvFetchConcurrencyLabel == null) return;
+    tvFetchConcurrencyLabel.setText("并发请求：" + value + "（解析下载，最高 " + FetchManager.MAX_CONCURRENCY + "）");
+  }
+
+  static String formatElapsed(long ms) {
+    return ElapsedFormat.format(ms);
+  }
+
   private List<String> getUrls() {
-    List<String> x = new ArrayList<>();
-    CharSequence cs = etUrls.getText();
-    if (cs == null) return x;
-    for (String s : cs.toString().split("\\r?\\n")) if (!s.trim().isEmpty()) x.add(s.trim());
-    return x;
+    CharSequence cs = etUrls == null ? "" : etUrls.getText();
+    return urlInbox.merge(cs);
+  }
+
+  private void flushUrlsToBox() {
+    if (etUrls == null) return;
+    List<String> urls = urlInbox.merge(etUrls.getText());
+    String joined = UrlInbox.join(urls);
+    CharSequence cur = etUrls.getText();
+    if (cur != null && joined.contentEquals(cur)) return;
+    etUrls.setText(joined);
   }
 
   private void startParse() {
     operationMode.select(mode); operationMode.start(); mode = operationMode.resultMode();
     cleanNames = switchCleanNames.isChecked();
     concurrency = Math.round(sliderConcurrency.getValue());
-    partial = false; discard = false; checkResults.clear();
+    partial = false; discard = false; checkResults.clear(); fastestOutcome = null;
+    stopElapsedTicker(false);
     synchronized (buckets) { buckets.replaceNetwork(Collections.emptyList()); }
     synchronized (extraInvalid) { extraInvalid.clear(); }
     synchronized (discovered) { discovered.clear(); }
-    List<String> urls = getUrls();
+    List<String> urls = urlInbox.takeAll(etUrls == null ? "" : etUrls.getText());
+    if (etUrls != null) etUrls.setText(UrlInbox.join(urls));
     if (!ParseRequestDecision.shouldRun(buckets.localCount(), urls.size())) { toast("请选择本地文件或输入网络地址"); return; }
     if (urls.isEmpty()) { recompute(false); return; }
     startFetch(urls, false);
@@ -253,16 +307,18 @@ public class MainActivity extends AppCompatActivity {
           int total = Math.max(1, p.getTotal());
           progressBar.setProgressCompat(p.getCompleted() * 100 / total, true);
           tvProgress.setText("正在解析书源    " + p.getCompleted() + " / " + p.getTotal());
-          tvStatus.setText("成功 " + p.getSucceeded() + " · 失败 " + p.getFailed() + " · 已发现 " + p.getDiscoveredSources() + " 条");
+          String status = "成功 " + p.getSucceeded() + " · 失败 " + p.getFailed() + " · 已发现 " + p.getDiscoveredSources() + " 条";
+          if (p.getRetrying() > 0) status += " · 慢网重试中";
+          tvStatus.setText(status);
           updateBackgroundTask("后台解析 " + p.getCompleted() + " / " + p.getTotal());
         });
       }
       @Override public void onItem(String url, String body) {
-        SourceParser.ParseResult p = SourceParser.parseArray(body, nextOrder);
+        int start = nextOrderSeq.getAndAdd(Math.max(1, estimateRecordSlots(body)));
+        SourceParser.ParseResult p = SourceParser.parseArray(body, start);
         synchronized (buckets) {
           if (!p.getRecords().isEmpty()) {
             buckets.addNetwork(p.getRecords());
-            nextOrder += p.getRecords().size();
           } else {
             String indirect = SourceParser.extractIndirectUrl(body);
             List<String> found = new ArrayList<>();
@@ -338,6 +394,9 @@ public class MainActivity extends AppCompatActivity {
     List<InvalidSource> all = new ArrayList<>(base.getInvalid());
     synchronized (extraInvalid) { all.addAll(extraInvalid); }
     result = new DedupeResult(copy.size(), base.getRetained(), base.getDuplicateGroups(), all);
+    if (!checkResults.isEmpty()) {
+      applyFastestOutcome(FastestUsableDedupe.apply(result.getRetained(), checkResults, checkSettings.probeRounds, null));
+    }
     partial = isPartial;
     setTaskRunning(false);
     cardRunning.setVisibility(View.GONE);
@@ -355,6 +414,7 @@ public class MainActivity extends AppCompatActivity {
     if (!checkResults.isEmpty()) renderCheckStats();
     else if (!all.isEmpty() && !hasRetained) {
       // 无有效结果时展示首条错误，便于定位抓取/解析失败
+      if (tvCheckElapsed != null) tvCheckElapsed.setVisibility(View.GONE);
       tvCheckStats.setVisibility(View.VISIBLE);
       if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.GONE);
       switchOnlyUsable.setVisibility(View.GONE);
@@ -364,6 +424,7 @@ public class MainActivity extends AppCompatActivity {
       tvCheckStats.setText("错误：" + detail);
       renderKindExportSwitches();
     } else {
+      if (tvCheckElapsed != null && lastCheckElapsedMs <= 0L) tvCheckElapsed.setVisibility(View.GONE);
       tvCheckStats.setVisibility(View.GONE);
       if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.GONE);
       switchOnlyUsable.setVisibility(View.GONE);
@@ -392,7 +453,9 @@ public class MainActivity extends AppCompatActivity {
     synchronized (buckets) { buckets.clearAll(); }
     synchronized (extraInvalid) { extraInvalid.clear(); }
     synchronized (discovered) { discovered.clear(); }
-    localFileCount = 0; nextOrder = 0; result = null; checkResults.clear(); partial = false;
+    localFileCount = 0; nextOrderSeq.set(0); result = null; checkResults.clear(); fastestOutcome = null; partial = false;
+    urlInbox.clear();
+    stopElapsedTicker(false);
     fetchRunning = false; checkRunning = false; checkCancelRequested = false;
     updateBackgroundTask("");
     etUrls.setText(""); tvLocalStatus.setVisibility(View.GONE); cardResult.setVisibility(View.GONE); cardRunning.setVisibility(View.GONE);
@@ -419,10 +482,10 @@ public class MainActivity extends AppCompatActivity {
 
   private void addLocalJson(String name, String json) {
     operationMode.start(); mode = operationMode.resultMode();
-    SourceParser.ParseResult p = SourceParser.parseArray(json, nextOrder);
+    int start = nextOrderSeq.getAndAdd(Math.max(1, estimateRecordSlots(json)));
+    SourceParser.ParseResult p = SourceParser.parseArray(json, start);
     synchronized (buckets) { buckets.addLocal(p.getRecords()); }
     synchronized (extraInvalid) { extraInvalid.addAll(p.getInvalid()); }
-    nextOrder += p.getRecords().size() + p.getInvalid().size();
     if (!p.getRecords().isEmpty()) {
       localFileCount++;
       tvLocalStatus.setVisibility(View.VISIBLE);
@@ -439,6 +502,7 @@ public class MainActivity extends AppCompatActivity {
     SharedPreferences p = checkPrefs();
     checkSettings.timeoutSeconds = p.getInt("timeout", CheckSourceSettings.DEFAULT_TIMEOUT);
     checkSettings.concurrency = p.getInt("concurrency", CheckSourceSettings.DEFAULT_CONCURRENCY);
+    checkSettings.probeRounds = p.getInt("probeRounds", CheckSourceSettings.DEFAULT_PROBE_ROUNDS);
     checkSettings.keyword = p.getString("keyword", CheckSourceSettings.DEFAULT_KEYWORD);
     checkSettings.checkSearch = p.getBoolean("search", true);
     checkSettings.checkDiscovery = p.getBoolean("discovery", true);
@@ -458,6 +522,7 @@ public class MainActivity extends AppCompatActivity {
     checkPrefs().edit()
         .putInt("timeout", (int) checkSettings.timeoutSeconds)
         .putInt("concurrency", checkSettings.concurrency)
+        .putInt("probeRounds", checkSettings.probeRounds)
         .putString("keyword", checkSettings.keyword)
         .putBoolean("search", checkSettings.checkSearch)
         .putBoolean("discovery", checkSettings.checkDiscovery)
@@ -477,6 +542,8 @@ public class MainActivity extends AppCompatActivity {
     TextView label = v.findViewById(R.id.tvTimeoutLabel);
     Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
     TextView checkConcurrencyLabel = v.findViewById(R.id.tvCheckConcurrencyLabel);
+    Slider probeSlider = v.findViewById(R.id.sliderProbeRounds);
+    TextView probeLabel = v.findViewById(R.id.tvProbeRoundsLabel);
     MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
     MaterialCheckBox cbDiscovery = v.findViewById(R.id.cbDiscovery);
     MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
@@ -492,8 +559,16 @@ public class MainActivity extends AppCompatActivity {
 
     slider.setValue(checkSettings.timeoutSeconds);
     label.setText("校验超时(秒)：" + checkSettings.timeoutSeconds);
-    checkConcurrencySlider.setValue(checkSettings.concurrency);
-    checkConcurrencyLabel.setText("并发校验数量：" + checkSettings.concurrency);
+    checkConcurrencySlider.setValueFrom(1);
+    checkConcurrencySlider.setValueTo(CheckSourceSettings.MAX_CONCURRENCY);
+    float conc = Math.max(1, Math.min(CheckSourceSettings.MAX_CONCURRENCY, checkSettings.concurrency));
+    checkConcurrencySlider.setValue(conc);
+    checkConcurrencyLabel.setText("并发校验数量：" + Math.round(conc));
+    probeSlider.setValueFrom(1);
+    probeSlider.setValueTo(CheckSourceSettings.MAX_PROBE_ROUNDS);
+    float rounds = Math.max(1, Math.min(CheckSourceSettings.MAX_PROBE_ROUNDS, checkSettings.probeRounds));
+    probeSlider.setValue(rounds);
+    probeLabel.setText("探测轮数：" + Math.round(rounds));
     cbSearch.setChecked(checkSettings.checkSearch);
     cbDiscovery.setChecked(checkSettings.checkDiscovery);
     cbInfo.setChecked(checkSettings.checkInfo);
@@ -514,6 +589,7 @@ public class MainActivity extends AppCompatActivity {
   private void collectCheckDialog(View v) {
     Slider slider = v.findViewById(R.id.sliderTimeout);
     Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
+    Slider probeSlider = v.findViewById(R.id.sliderProbeRounds);
     MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
     MaterialCheckBox cbDiscovery = v.findViewById(R.id.cbDiscovery);
     MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
@@ -523,6 +599,7 @@ public class MainActivity extends AppCompatActivity {
     checkSettings.timeoutSeconds = Math.round(slider.getValue());
     if (checkSettings.timeoutSeconds <= 0) checkSettings.timeoutSeconds = CheckSourceSettings.DEFAULT_TIMEOUT;
     checkSettings.concurrency = Math.round(checkConcurrencySlider.getValue());
+    checkSettings.probeRounds = Math.round(probeSlider.getValue());
     checkSettings.checkSearch = cbSearch.isChecked();
     checkSettings.checkDiscovery = cbDiscovery.isChecked();
     checkSettings.checkInfo = cbInfo.isChecked();
@@ -546,6 +623,8 @@ public class MainActivity extends AppCompatActivity {
     TextView label = v.findViewById(R.id.tvTimeoutLabel);
     Slider checkConcurrencySlider = v.findViewById(R.id.sliderCheckConcurrency);
     TextView checkConcurrencyLabel = v.findViewById(R.id.tvCheckConcurrencyLabel);
+    Slider probeSlider = v.findViewById(R.id.sliderProbeRounds);
+    TextView probeLabel = v.findViewById(R.id.tvProbeRoundsLabel);
     MaterialCheckBox cbSearch = v.findViewById(R.id.cbSearch);
     MaterialCheckBox cbInfo = v.findViewById(R.id.cbInfo);
     MaterialCheckBox cbCategory = v.findViewById(R.id.cbCategory);
@@ -556,6 +635,8 @@ public class MainActivity extends AppCompatActivity {
     slider.addOnChangeListener((s, value, fromUser) -> label.setText("校验超时(秒)：" + Math.round(value)));
     checkConcurrencySlider.addOnChangeListener((s, value, fromUser) ->
         checkConcurrencyLabel.setText("并发校验数量：" + Math.round(value)));
+    probeSlider.addOnChangeListener((s, value, fromUser) ->
+        probeLabel.setText("探测轮数：" + Math.round(value)));
     cbSearch.setOnCheckedChangeListener((b, on) -> {
       tilKeyword.setEnabled(on);
       etKeyword.setEnabled(on);
@@ -582,43 +663,150 @@ public class MainActivity extends AppCompatActivity {
     fetchRunning = false;
     checkRunning = true;
     checkCancelRequested = false;
+    lastCheckElapsedMs = 0L;
     checkResults.clear();
     cardRunning.setVisibility(View.VISIBLE);
     setTaskRunning(true);
     btnStop.setText("停止校验");
     btnStop.setEnabled(true);
+    startElapsedTicker();
     updateBackgroundTask("后台校验 0 / " + targets.size());
     tvProgress.setText("正在校验书源 0 / " + targets.size());
     tvStatus.setText("超时 " + settings.timeoutSeconds + "s · 并发 " + settings.concurrency
-        + " · 关键词 " + settings.keyword);
+        + " · 探测 " + settings.probeRounds + " 轮 · 关键词 " + settings.keyword);
     progressBar.setProgressCompat(0, false);
-    checkEngine = new CheckSourceEngine(settings.concurrency);
-    new Thread(() -> checkEngine.checkAll(targets, settings, new CheckSourceEngine.Listener() {
-      @Override public void onProgress(int done, int total, String currentName) {
-        runOnUiThread(() -> {
-          progressBar.setProgressCompat(done * 100 / Math.max(1, total), true);
-          tvProgress.setText("正在校验书源 " + done + " / " + total);
-          tvStatus.setText(currentName == null ? "" : currentName);
-          updateBackgroundTask("后台校验 " + done + " / " + total);
-        });
+    final CheckSourceEngine engine = new CheckSourceEngine(settings.concurrency);
+    checkEngine = engine;
+    new Thread(() -> {
+      CheckSourceEngine.Listener listener = new CheckSourceEngine.Listener() {
+        @Override public void onProgress(int done, int total, String currentName) {
+          runOnUiThread(() -> {
+            progressBar.setProgressCompat(done * 100 / Math.max(1, total), true);
+            tvProgress.setText("正在校验书源 " + done + " / " + total);
+            String why = done >= total
+                ? "源已探完，正在汇总同域最快结果"
+                : (currentName == null ? "" : currentName);
+            tvStatus.setText(checkStatusLine(settings, why));
+            updateBackgroundTask("后台校验 " + done + " / " + total);
+          });
+        }
+        @Override public void onProbe(SourceRecord source, int round, int rounds, int inFlight) {
+          String name = source == null || source.getName() == null ? "书源" : source.getName();
+          runOnUiThread(() -> {
+            tvStatus.setText(checkStatusLine(settings,
+                "并发 " + inFlight + " 条进行中 · " + name + " 第 " + round + "/" + rounds + " 轮"));
+          });
+        }
+        @Override public void onItem(CheckSourceResult r) {}
+        @Override public void onFinished(List<CheckSourceResult> results) {
+          boolean wasCancelled = checkCancelRequested || engine.isCancelled();
+          FastestUsableDedupe.Outcome outcome = null;
+          if (results != null && !results.isEmpty()) {
+            runOnUiThread(() -> {
+              tvProgress.setText("正在按已测中位耗时汇总同域最快");
+              tvStatus.setText(checkStatusLine(settings,
+                  "收尾不再重打 HTTP，避免进度完成后又卡很久"));
+              updateBackgroundTask("汇总同域最快");
+            });
+            outcome = FastestUsableDedupe.apply(targets, results, settings.probeRounds, null);
+          }
+          FastestUsableDedupe.Outcome apply = outcome;
+          runOnUiThread(() -> {
+            stopElapsedTicker(true);
+            checkResults = results;
+            checkRunning = false;
+            checkCancelRequested = false;
+            checkEngine = null;
+            updateBackgroundTask("");
+            setTaskRunning(false);
+            cardRunning.setVisibility(View.GONE);
+            if (apply != null) applyFastestOutcome(apply);
+            onlyUsable = true;
+            switchOnlyUsable.setChecked(true);
+            switchOnlyUsable.setVisibility(checkResults.isEmpty() ? View.GONE : View.VISIBLE);
+            renderCheckStats();
+            String spent = formatElapsed(lastCheckElapsedMs);
+            toast(wasCancelled
+                ? "校验已停止，保留已完成 " + results.size() + " 条 · 用时 " + spent
+                : "校验完成 · 用时 " + spent);
+          });
+        }
+      };
+      try {
+        engine.checkAll(targets, settings, listener);
+      } finally {
+        engine.close();
       }
-      @Override public void onItem(CheckSourceResult r) {}
-      @Override public void onFinished(List<CheckSourceResult> results) {
-        runOnUiThread(() -> {
-          boolean wasCancelled = checkCancelRequested || (checkEngine != null && checkEngine.isCancelled());
-          checkResults = results;
-          checkRunning = false;
-          checkCancelRequested = false;
-          checkEngine = null;
-          updateBackgroundTask("");
-          setTaskRunning(false);
-          cardRunning.setVisibility(View.GONE);
-          switchOnlyUsable.setVisibility(checkResults.isEmpty() ? View.GONE : View.VISIBLE);
-          renderCheckStats();
-          toast(wasCancelled ? "校验已停止，保留已完成 " + results.size() + " 条" : "校验完成");
-        });
+    }, "source-check").start();
+  }
+
+  private String checkStatusLine(CheckSourceSettings settings, String extra) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("超时 ").append(settings.timeoutSeconds).append("s");
+    sb.append(" · 并发 ").append(settings.concurrency);
+    sb.append(" · 探测 ").append(settings.probeRounds).append(" 轮");
+    if (extra != null && !extra.trim().isEmpty()) sb.append(" · ").append(extra.trim());
+    long elapsedMs = checkClock.elapsed(System.currentTimeMillis());
+    if (elapsedMs >= 60_000L) {
+      sb.append(" · 过慢常见原因：死站仍要等超时、10 轮探测");
+    }
+    return sb.toString();
+  }
+
+  private void startElapsedTicker() {
+    checkClock.start(System.currentTimeMillis());
+    lastCheckElapsedMs = 0L;
+    elapsedHandler.removeCallbacks(elapsedTick);
+    refreshElapsedView();
+    elapsedHandler.postDelayed(elapsedTick, 250);
+  }
+
+  private void stopElapsedTicker(boolean keepLast) {
+    elapsedHandler.removeCallbacks(elapsedTick);
+    if (checkClock.isRunning()) checkClock.stop(System.currentTimeMillis());
+    if (keepLast) lastCheckElapsedMs = checkClock.elapsed(System.currentTimeMillis());
+    else {
+      checkClock.reset();
+      lastCheckElapsedMs = 0L;
+    }
+    refreshElapsedView();
+  }
+
+  private void refreshElapsedView() {
+    long ms = checkClock.isRunning()
+        ? checkClock.elapsed(System.currentTimeMillis())
+        : lastCheckElapsedMs;
+    String text = getString(R.string.check_elapsed, formatElapsed(Math.max(0L, ms)));
+    if (tvElapsed != null) {
+      if (checkClock.isRunning()) {
+        tvElapsed.setVisibility(View.VISIBLE);
+        tvElapsed.setText(text);
+      } else {
+        tvElapsed.setVisibility(View.GONE);
       }
-    }), "source-check").start();
+    }
+    if (tvCheckElapsed != null) {
+      if (!checkClock.isRunning() && lastCheckElapsedMs > 0L) {
+        tvCheckElapsed.setVisibility(View.VISIBLE);
+        tvCheckElapsed.setText(text);
+      } else {
+        tvCheckElapsed.setVisibility(View.GONE);
+      }
+    }
+  }
+
+  private static int estimateRecordSlots(String body) {
+    if (body == null || body.isEmpty()) return 1;
+    int n = 0;
+    int from = 0;
+    while (true) {
+      int i = body.indexOf("bookSourceUrl", from);
+      if (i < 0) break;
+      n++;
+      from = i + 13;
+      if (n > 50_000) break;
+    }
+    return Math.max(1, n);
   }
 
   private void renderCheckStats() {
@@ -630,7 +818,12 @@ public class MainActivity extends AppCompatActivity {
       else fail++;
     }
     tvCheckStats.setVisibility(View.VISIBLE);
-    tvCheckStats.setText(getString(R.string.check_result_title));
+    String extra = "";
+    if (fastestOutcome != null) {
+      extra = " · 同域淘汰 " + fastestOutcome.removedSlow + " · 接近未淘汰 " + fastestOutcome.closeKept;
+    }
+    tvCheckStats.setText(getString(R.string.check_result_title) + extra);
+    refreshElapsedView();
     if (rowCheckTiles != null) rowCheckTiles.setVisibility(View.VISIBLE);
     setStatValue(R.id.tileOk, ok);
     setStatValue(R.id.tileFail, fail);
@@ -743,18 +936,34 @@ public class MainActivity extends AppCompatActivity {
 
   private List<SourceRecord> exportRecords() {
     if (result == null) return Collections.emptyList();
-    List<SourceRecord> base;
-    if (!onlyUsable || checkResults.isEmpty()) {
-      base = result.getRetained();
-    } else {
+    List<SourceRecord> base = result.getRetained();
+    if (onlyUsable && !checkResults.isEmpty()) {
       Set<String> good = new HashSet<>();
-      for (CheckSourceResult r : checkResults) if (r.isUsable() && r.source.getUrl() != null) good.add(r.source.getUrl());
-      base = new ArrayList<>();
-      for (SourceRecord s : result.getRetained()) if (s.getUrl() != null && good.contains(s.getUrl())) base.add(s);
+      for (CheckSourceResult r : checkResults) {
+        if (r.isUsable() && r.source.getUrl() != null) good.add(r.source.getUrl());
+      }
+      List<SourceRecord> usable = new ArrayList<>();
+      for (SourceRecord s : base) if (s.getUrl() != null && good.contains(s.getUrl())) usable.add(s);
+      base = usable;
     }
     Set<SourceKind> allow = selectedExportKinds();
     if (allow.isEmpty()) return Collections.emptyList();
     return SourceKind.filter(base, allow);
+  }
+
+  private void applyFastestOutcome(FastestUsableDedupe.Outcome outcome) {
+    fastestOutcome = outcome;
+    if (outcome == null || result == null) return;
+    List<DuplicateGroup> groups = new ArrayList<DuplicateGroup>();
+    for (DuplicateGroup g : result.getDuplicateGroups()) {
+      String reason = g.getReason();
+      if (reason != null && (reason.startsWith("同类型同域名仅保留") || "耗时接近，未淘汰".equals(reason))) continue;
+      groups.add(g);
+    }
+    groups.addAll(outcome.groups);
+    result = new DedupeResult(result.getOriginalCount(), outcome.retained, groups, result.getInvalid());
+    setStatValue(R.id.tileDup, result.getDuplicateCount());
+    setStatValue(R.id.tileKept, result.getRetained().size());
   }
 
   private List<Object> exportPayload() {
@@ -802,25 +1011,38 @@ public class MainActivity extends AppCompatActivity {
   private void importReader() {
     List<SourceRecord> candidates = exportRecords();
     if (candidates.isEmpty()) { toast("没有可导入的数据，请打开要导入的类型开关"); return; }
-    startReaderImport(candidates);
+    String last = getSharedPreferences("import", MODE_PRIVATE).getString("lastReader", "");
+    List<ReaderCatalog.App> apps = ReaderCatalog.resolve(getPackageManager(), last);
+    if (apps.isEmpty()) {
+      toast(getString(R.string.no_reader_installed));
+      return;
+    }
+    if (apps.size() == 1) {
+      startReaderImport(candidates, apps.get(0).packageName);
+      return;
+    }
+    CharSequence[] labels = new CharSequence[apps.size()];
+    for (int i = 0; i < apps.size(); i++) {
+      ReaderCatalog.App app = apps.get(i);
+      labels[i] = app.label + "\n" + app.packageName;
+    }
+    new MaterialAlertDialogBuilder(this)
+        .setTitle(R.string.choose_reader)
+        .setItems(labels, (d, w) -> startReaderImport(candidates, apps.get(w).packageName))
+        .setNegativeButton(R.string.cancel, null)
+        .show();
   }
 
-  private void startReaderImport(List<SourceRecord> list) {
+  private void startReaderImport(List<SourceRecord> list, String packageName) {
     String json = exportJson(list);
     if (json == null) { toast("没有可导入的数据"); return; }
     try {
       // Reading fetches this URL immediately before showing its native BatchImportDialog.
       // Loopback avoids Binder-size limits and never uploads the source JSON to a third party.
       String importUrl = ReaderImportService.prepare(this, json, 2L * 60L * 1000L);
-      Uri deepLink = Uri.parse("legado://import/bookSource").buildUpon()
-          .appendQueryParameter("src", importUrl)
-          .build();
-      Intent view = new Intent(Intent.ACTION_VIEW, deepLink);
-      view.addCategory(Intent.CATEGORY_BROWSABLE);
-      List<android.content.pm.ResolveInfo> readers = getPackageManager().queryIntentActivities(
-          view, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
-      if (readers.isEmpty()) throw new ActivityNotFoundException("未找到支持 legado:// 导入的阅读 App");
+      Intent view = ReaderCatalog.importIntent(packageName, importUrl);
       startActivity(view);
+      getSharedPreferences("import", MODE_PRIVATE).edit().putString("lastReader", packageName).apply();
       toast("将导入 " + list.size() + " 条到阅读，请再勾选确认");
     } catch (Exception e) {
       ReaderImportService.cancel(this);
@@ -988,21 +1210,9 @@ public class MainActivity extends AppCompatActivity {
   }
   private String collectYckUrl(final String url) {
     if (!YckUrlPolicy.collectable(url)) return "invalid";
-    final String[] out = {"invalid"};
-    final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-    runOnUiThread(() -> {
-      boolean added = appendUrlIfAbsent(url);
-      out[0] = added ? "added" : "duplicate";
-      // 与 2.3.10 一致：仅写入 URL 列表，不强制切 Tab；由注入按钮 flash 反馈
-      latch.countDown();
-    });
-    try {
-      if (!latch.await(1200, java.util.concurrent.TimeUnit.MILLISECONDS)) return "invalid";
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return "invalid";
-    }
-    return out[0];
+    boolean added = urlInbox.add(url, urlBoxSnapshot);
+    runOnUiThread(this::flushUrlsToBox);
+    return added ? "added" : "duplicate";
   }
   private void injectYckCollector() {
     yck.post(() -> yck.evaluateJavascript(YckCollectorScript.source(), null));
@@ -1010,13 +1220,10 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private boolean appendUrlIfAbsent(String u) {
-    String clean = u == null ? "" : u.trim();
-    if (clean.isEmpty()) return false;
-    CharSequence cur = etUrls.getText();
-    String s = cur == null ? "" : cur.toString();
-    for (String x : s.split("\\r?\\n")) if (x.trim().equals(clean)) return false;
-    etUrls.setText(s.trim().isEmpty() ? clean : s + "\n" + clean);
-    return true;
+    CharSequence box = etUrls == null ? "" : etUrls.getText();
+    boolean added = urlInbox.add(u, box);
+    flushUrlsToBox();
+    return added;
   }
 
   private void showJsonMenu(String url) {
@@ -1060,6 +1267,11 @@ public class MainActivity extends AppCompatActivity {
   }
 
   private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+
+  @Override protected void onDestroy() {
+    elapsedHandler.removeCallbacks(elapsedTick);
+    super.onDestroy();
+  }
 
   @Override public void onBackPressed() {
     if (currentTab == 1 && yck.canGoBack()) yck.goBack();

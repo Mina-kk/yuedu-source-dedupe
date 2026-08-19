@@ -26,6 +26,15 @@ public final class UrlNormalizer {
     return parts[0];
   }
 
+  public static boolean isHttpUrl(String raw) {
+    try {
+      requestUrl(raw);
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
   private static String canonical(String raw, boolean hostOnly, boolean stripTrack) throws URISyntaxException {
     String[] parts = splitIdentity(raw);
     URI u = new URI(parts[0]);

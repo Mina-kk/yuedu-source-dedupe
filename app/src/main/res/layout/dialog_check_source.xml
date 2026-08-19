@@ -59,14 +59,37 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:valueFrom="1"
-                    android:valueTo="100"
+                    android:valueTo="500"
                     android:stepSize="1"
                     android:value="8" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="可按设备和网络在 1–100 间调整；高并发会占用更多网络与内存"
+                    android:text="可按设备和网络在 1–500 间调整；高并发会占用更多网络与内存"
+                    android:textColor="@color/md_theme_outline"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tvProbeRoundsLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="探测轮数：10" />
+
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/sliderProbeRounds"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:valueFrom="1"
+                    android:valueTo="10"
+                    android:stepSize="1"
+                    android:value="10" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="每源连续探测，成功过半即停；网站失效或超时不再打满 10 轮。同域确认最多 3 轮且按校验并发并行。"
                     android:textColor="@color/md_theme_outline"
                     android:textSize="12sp" />
             </LinearLayout>

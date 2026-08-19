@@ -1,129 +1,279 @@
 package com.mina.yuedu.network;
-import java.io.*;
-import java.net.*;
-import java.util.*;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PushbackInputStream;
+import java.net.HttpURLConnection;
+import java.net.Proxy;
+import java.net.URL;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPInputStream;
+
 public final class FetchManager {
+  public static final int MAX_CONCURRENCY = 10;
+
   public static final class QueueState {
-    private final Deque<String> pending; private final int limit, total;
-    private int inFlight, completed, succeeded, failed, sources; private boolean cancelled, keepLoaded;
-    public QueueState(List<String> urls, int limit){
-      if(limit<1||limit>8) throw new IllegalArgumentException("concurrency 1..8");
-      pending=new ArrayDeque<>(urls); this.limit=limit; total=urls.size();
+    private final Deque<String> pending;
+    private final int limit, total;
+    private int inFlight, completed, succeeded, failed, sources, retrying;
+    private boolean cancelled, keepLoaded;
+    private final Map<String, Integer> hostInFlight = new HashMap<String, Integer>();
+
+    public QueueState(List<String> urls, int limit) {
+      if (limit < 1 || limit > MAX_CONCURRENCY) {
+        throw new IllegalArgumentException("concurrency 1.." + MAX_CONCURRENCY);
+      }
+      pending = new ArrayDeque<String>(urls);
+      this.limit = limit;
+      total = urls.size();
     }
-    public synchronized String takeNext(){ if(cancelled||inFlight>=limit||pending.isEmpty()) return null; inFlight++; return pending.removeFirst(); }
-    public synchronized void complete(boolean ok, int count){ if(inFlight>0) inFlight--; completed++; if(ok) succeeded++; else failed++; sources+=Math.max(0,count); }
-    public synchronized void cancel(boolean keep){ cancelled=true; keepLoaded=keep; pending.clear(); }
-    public synchronized boolean shouldKeepLoaded(){ return keepLoaded; }
-    public synchronized boolean isCancelled(){ return cancelled; }
-    public synchronized boolean isDone(){ return (pending.isEmpty()&&inFlight==0) || (cancelled&&inFlight==0); }
-    public synchronized FetchProgress progress(){ return new FetchProgress(total, completed, succeeded, failed, sources, !isDone(), cancelled); }
+
+    public synchronized String takeNext() {
+      if (cancelled || inFlight >= limit || pending.isEmpty()) return null;
+      int n = pending.size();
+      for (int i = 0; i < n; i++) {
+        String url = pending.removeFirst();
+        String host = FetchPolicy.hostKey(url);
+        int used = hostInFlight.containsKey(host) ? hostInFlight.get(host) : 0;
+        if (used < FetchPolicy.MAX_PER_HOST) {
+          hostInFlight.put(host, used + 1);
+          inFlight++;
+          return url;
+        }
+        pending.addLast(url);
+      }
+      return null;
+    }
+
+    public synchronized void complete(boolean ok, int count) {
+      if (inFlight > 0) inFlight--;
+      completed++;
+      if (ok) succeeded++;
+      else failed++;
+      sources += Math.max(0, count);
+    }
+
+    public synchronized void releaseHost(String url) {
+      String host = FetchPolicy.hostKey(url);
+      Integer used = hostInFlight.get(host);
+      if (used == null) return;
+      if (used <= 1) hostInFlight.remove(host);
+      else hostInFlight.put(host, used - 1);
+    }
+
+    public synchronized void markRetrying(boolean on) {
+      if (on) retrying++;
+      else if (retrying > 0) retrying--;
+    }
+
+    public synchronized void cancel(boolean keep) {
+      cancelled = true;
+      keepLoaded = keep;
+      pending.clear();
+    }
+
+    public synchronized boolean shouldKeepLoaded() { return keepLoaded; }
+    public synchronized boolean isCancelled() { return cancelled; }
+    public synchronized boolean isDone() {
+      return (pending.isEmpty() && inFlight == 0) || (cancelled && inFlight == 0);
+    }
+    public synchronized FetchProgress progress() {
+      return new FetchProgress(total, completed, succeeded, failed, sources, !isDone(), cancelled, retrying);
+    }
   }
-  private static final String PROXY_HOST = "127.0.0.1";
-  private static final int PROXY_PORT = 3388;
-  private final Set<HttpURLConnection> active=Collections.synchronizedSet(new HashSet<>());
-  private volatile QueueState state; private volatile FetchListener listener; private final AtomicInteger workers=new AtomicInteger();
+
+  private final Set<HttpURLConnection> active = Collections.synchronizedSet(new HashSet<HttpURLConnection>());
+  private volatile QueueState state;
+  private volatile FetchListener listener;
+  private final AtomicInteger workers = new AtomicInteger();
   private final int maxBytes = 32 * 1024 * 1024;
-  public synchronized void start(List<String> urls, int concurrency, FetchListener l){
-    if(state!=null && !state.isDone()) throw new IllegalStateException("task running");
-    state=new QueueState(urls, concurrency); listener=l; listener.onProgress(state.progress());
-    workers.set(concurrency);
-    for(int i=0;i<concurrency;i++) new Thread(this::work, "source-fetch-"+i).start();
+
+  public synchronized void start(List<String> urls, int concurrency, FetchListener l) {
+    if (state != null && !state.isDone()) throw new IllegalStateException("task running");
+    listener = l;
+    if (urls == null || urls.isEmpty()) {
+      state = new QueueState(java.util.Collections.<String>emptyList(), 1);
+      listener.onProgress(state.progress());
+      listener.onFinished(false, false);
+      return;
+    }
+    int n = Math.max(1, Math.min(MAX_CONCURRENCY, concurrency));
+    n = Math.min(n, urls.size());
+    state = new QueueState(urls, n);
+    listener.onProgress(state.progress());
+    workers.set(n);
+    for (int i = 0; i < n; i++) new Thread(this::work, "source-fetch-" + i).start();
   }
-  public void cancel(boolean keep){ QueueState s=state; if(s==null) return; s.cancel(keep); synchronized(active){ for(HttpURLConnection c:new ArrayList<>(active)) c.disconnect(); } }
-  private void work(){
-    try{
-      while(true){
-        String url=state.takeNext(); if(url==null) break;
-        try{
-          String body=fetch(url);
-          int count=estimateCount(body);
+
+  public void cancel(boolean keep) {
+    QueueState s = state;
+    if (s == null) return;
+    s.cancel(keep);
+    synchronized (active) {
+      for (HttpURLConnection c : new ArrayList<HttpURLConnection>(active)) c.disconnect();
+    }
+  }
+
+  private void work() {
+    try {
+      while (true) {
+        if (state.isCancelled()) break;
+        String url = state.takeNext();
+        if (url == null) {
+          if (state.isDone() || state.isCancelled()) break;
+          sleepQuiet(40L);
+          continue;
+        }
+        try {
+          String body = fetchWithRetry(url);
+          int count = estimateCount(body);
+          try {
+            listener.onItem(url, body);
+          } catch (Exception parseErr) {
+            listener.onFailure(url, formatErr(parseErr));
+          }
           state.complete(true, count);
-          listener.onItem(url, body);
-        }catch(Exception e){
+        } catch (Exception e) {
           state.complete(false, 0);
-          String msg = e.getMessage();
-          if(msg==null || msg.trim().isEmpty()) msg = e.getClass().getSimpleName();
-          listener.onFailure(url, e.getClass().getSimpleName()+":"+msg);
+          listener.onFailure(url, formatErr(e));
+        } finally {
+          state.releaseHost(url);
         }
         listener.onProgress(state.progress());
       }
     } finally {
-      if(workers.decrementAndGet()==0) listener.onFinished(state.isCancelled(), state.shouldKeepLoaded());
+      if (workers.decrementAndGet() == 0) {
+        listener.onFinished(state.isCancelled(), state.shouldKeepLoaded());
+      }
     }
   }
-  private int estimateCount(String body){
-    try{
-      SourceParser.ParseResult p=SourceParser.parseArray(body,0);
-      return p.getRecords().size();
-    }catch(Exception e){ return 0; }
+
+  private String fetchWithRetry(String url) throws Exception {
+    Exception last = null;
+    for (int attempt = 1; attempt <= FetchPolicy.MAX_ATTEMPTS; attempt++) {
+      if (state != null && state.isCancelled()) {
+        throw last != null ? last : new IOException("cancelled");
+      }
+      try {
+        return doFetch(url);
+      } catch (Exception e) {
+        last = e;
+        boolean more = attempt < FetchPolicy.MAX_ATTEMPTS && FetchPolicy.isRetryable(e)
+            && (state == null || !state.isCancelled());
+        if (!more) throw e;
+        state.markRetrying(true);
+        try {
+          listener.onProgress(state.progress());
+          sleepQuiet(FetchPolicy.backoffMs(attempt));
+        } finally {
+          state.markRetrying(false);
+        }
+      }
+    }
+    throw last != null ? last : new IOException("fetch failed");
   }
-  private String fetch(String url) throws Exception {
-    Exception directErr = null;
+
+  private static String formatErr(Exception e) {
+    String msg = e.getMessage();
+    if (msg == null || msg.trim().isEmpty()) msg = e.getClass().getSimpleName();
+    return e.getClass().getSimpleName() + ":" + msg;
+  }
+
+  private void sleepQuiet(long ms) {
+    if (ms <= 0L) return;
     try {
-      return doFetch(url, Proxy.NO_PROXY);
+      Thread.sleep(ms);
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  private int estimateCount(String body) {
+    try {
+      return SourceParser.parseArray(body, 0).getRecords().size();
     } catch (Exception e) {
-      directErr = e;
-      if (state != null && state.isCancelled()) throw e;
-    }
-    try {
-      return doFetch(url, new Proxy(Proxy.Type.HTTP, new InetSocketAddress(PROXY_HOST, PROXY_PORT)));
-    } catch (Exception e2) {
-      if (directErr != null) throw directErr;
-      throw e2;
+      return 0;
     }
   }
-  private String doFetch(String url, Proxy proxy) throws Exception {
-    HttpURLConnection c = open(url, proxy);
+
+  private String doFetch(String url) throws Exception {
+    HttpURLConnection c = open(url);
     active.add(c);
-    try{
+    try {
       int code = c.getResponseCode();
-      // some stacks surface 3xx even with follow-redirects; follow a few hops manually
       int hops = 0;
       while (code >= 300 && code < 400 && hops < 5) {
         String loc = c.getHeaderField("Location");
         if (loc == null || loc.trim().isEmpty()) break;
         URL next = new URL(c.getURL(), loc);
-        active.remove(c); c.disconnect();
-        c = open(next.toString(), proxy);
+        active.remove(c);
+        c.disconnect();
+        c = open(next.toString());
         active.add(c);
         code = c.getResponseCode();
         hops++;
       }
-      if(code < 200 || code >= 300) throw new IOException("HTTP "+code);
-      InputStream raw = c.getErrorStream()!=null && code>=400 ? c.getErrorStream() : c.getInputStream();
+      if (code < 200 || code >= 300) throw new IOException("HTTP " + code);
+      InputStream raw = c.getErrorStream() != null && code >= 400 ? c.getErrorStream() : c.getInputStream();
       if (raw == null) throw new IOException("empty body");
       InputStream in = wrapMaybeGzip(raw, c.getContentEncoding());
-      try{
-        ByteArrayOutputStream out=new ByteArrayOutputStream();
-        byte[] b=new byte[8192]; int n; int total=0;
-        while((n=in.read(b))>=0){ total+=n; if(total>maxBytes) throw new IOException("response too large ("+total+")"); out.write(b,0,n); }
-        if(total==0) throw new IOException("empty body");
+      try {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] b = new byte[8192];
+        int n;
+        int total = 0;
+        while ((n = in.read(b)) >= 0) {
+          total += n;
+          if (total > maxBytes) throw new IOException("response too large (" + total + ")");
+          out.write(b, 0, n);
+        }
+        if (total == 0) throw new IOException("empty body");
         return out.toString("UTF-8");
-      } finally { in.close(); }
-    } finally { active.remove(c); c.disconnect(); }
+      } finally {
+        in.close();
+      }
+    } finally {
+      active.remove(c);
+      c.disconnect();
+    }
   }
-  private HttpURLConnection open(String url, Proxy proxy) throws Exception {
-    HttpURLConnection c=(HttpURLConnection) new URL(url).openConnection(proxy);
-    c.setConnectTimeout(20000);
-    c.setReadTimeout(90000);
+
+  private HttpURLConnection open(String url) throws Exception {
+    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection(Proxy.NO_PROXY);
+    c.setConnectTimeout(FetchPolicy.CONNECT_TIMEOUT_MS);
+    c.setReadTimeout(FetchPolicy.READ_TIMEOUT_MS);
     c.setInstanceFollowRedirects(true);
-    c.setRequestProperty("User-Agent", "YueduSourceDedupe/3.0");
+    c.setRequestProperty("User-Agent", FetchPolicy.USER_AGENT);
     c.setRequestProperty("Accept", "application/json,text/plain,*/*");
-    // 不主动声明 gzip：对齐 2.3.10，避免 Android 透明解压与二次 GZIP 冲突
+    c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+    String origin = FetchPolicy.origin(url);
+    if (origin != null) c.setRequestProperty("Referer", origin);
     return c;
   }
+
   private InputStream wrapMaybeGzip(InputStream raw, String enc) throws IOException {
     boolean claimGzip = enc != null && enc.toLowerCase(Locale.ROOT).contains("gzip");
     if (!claimGzip) return raw;
-    // 仅当确实是 gzip 魔数时再包一层，防止已透明解压后再次解压失败
     PushbackInputStream pb = new PushbackInputStream(raw, 2);
-    int b1 = pb.read(); int b2 = pb.read();
+    int b1 = pb.read();
+    int b2 = pb.read();
     if (b1 < 0) return pb;
-    if (b2 < 0) { pb.unread(b1); return pb; }
-    pb.unread(new byte[]{(byte)b1,(byte)b2});
+    if (b2 < 0) {
+      pb.unread(b1);
+      return pb;
+    }
+    pb.unread(new byte[]{(byte) b1, (byte) b2});
     if (b1 == 0x1f && b2 == 0x8b) return new GZIPInputStream(pb);
     return pb;
   }
