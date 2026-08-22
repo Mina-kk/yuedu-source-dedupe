@@ -137,6 +137,13 @@
                     android:layout_height="wrap_content"
                     android:text="清理名称中的装饰符号" />
 
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/switchCleanLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="@string/clean_login" />
+
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnParse"
                     android:layout_width="match_parent"
@@ -366,6 +373,15 @@
                         android:layout_marginTop="10dp"
                         android:textColor="@color/ledger_muted"
                         android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/tvFilterHints"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:textColor="@color/ledger_muted"
+                        android:textSize="13sp"
+                        android:visibility="gone" />
                 </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton

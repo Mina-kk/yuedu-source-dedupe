@@ -59,10 +59,10 @@ public class MainActivity extends AppCompatActivity {
   private volatile String urlBoxSnapshot = "";
   private View cardRunning, cardResult;
   private LinearLayout boxKindExport, rowCheckTiles;
-  private TextView tvExportPreview;
+  private TextView tvExportPreview, tvFilterHints;
   private final Map<SourceKind, KindRow> kindRows = new EnumMap<>(SourceKind.class);
   private LinearProgressIndicator progressBar;
-  private MaterialSwitch switchCleanNames, switchOnlyUsable;
+  private MaterialSwitch switchCleanNames, switchOnlyUsable, switchCleanLogin;
   private MaterialButtonToggleGroup modeGroup;
   private Slider sliderConcurrency;
   private TextView tvFetchConcurrencyLabel;
@@ -89,7 +89,7 @@ public class MainActivity extends AppCompatActivity {
   private FastestUsableDedupe.Outcome fastestOutcome;
   private FetchManager fetchManager;
   private CheckSourceEngine checkEngine;
-  private boolean cleanNames, partial, discard, onlyUsable;
+  private boolean cleanNames, partial, discard, onlyUsable, cleanLogin = true, deleteCaptcha = true;
   private boolean fetchRunning, checkRunning, checkCancelRequested;
   private int concurrency = 4, localFileCount, currentTab;
   private long lastCheckElapsedMs;
@@ -200,6 +200,7 @@ public class MainActivity extends AppCompatActivity {
     boxKindExport = root.findViewById(R.id.boxKindExport);
     rowCheckTiles = root.findViewById(R.id.rowCheckTiles);
     tvExportPreview = root.findViewById(R.id.tvExportPreview);
+    tvFilterHints = root.findViewById(R.id.tvFilterHints);
     kindRows.clear();
     bindKindRow(root, R.id.rowKindNovel, SourceKind.NOVEL, R.color.md_theme_primary);
     bindKindRow(root, R.id.rowKindComic, SourceKind.COMIC, R.color.md_theme_primary);
@@ -218,6 +219,7 @@ public class MainActivity extends AppCompatActivity {
     progressBar = root.findViewById(R.id.progressBar);
     switchCleanNames = root.findViewById(R.id.switchCleanNames);
     switchOnlyUsable = root.findViewById(R.id.switchOnlyUsable);
+    switchCleanLogin = root.findViewById(R.id.switchCleanLogin);
     modeGroup = root.findViewById(R.id.modeGroup);
     sliderConcurrency = root.findViewById(R.id.sliderConcurrency);
     tvFetchConcurrencyLabel = root.findViewById(R.id.tvFetchConcurrencyLabel);
@@ -249,6 +251,15 @@ public class MainActivity extends AppCompatActivity {
     });
     switchCleanNames.setOnCheckedChangeListener((b, on) -> { cleanNames = on; if (result != null) recompute(partial); });
     switchOnlyUsable.setOnCheckedChangeListener((b, on) -> { onlyUsable = on; refreshExportPreview(); });
+    cleanLogin = checkPrefs().getBoolean("cleanLogin", true);
+    if (switchCleanLogin != null) {
+      switchCleanLogin.setChecked(cleanLogin);
+      switchCleanLogin.setOnCheckedChangeListener((b, on) -> {
+        cleanLogin = on;
+        checkPrefs().edit().putBoolean("cleanLogin", on).apply();
+        refreshExportPreview();
+      });
+    }
     btnParse.setOnClickListener(v -> startParse());
     btnStop.setOnClickListener(v -> stopCurrentTask());
     btnCheck.setOnClickListener(v -> showCheckDialog());
@@ -453,6 +464,7 @@ public class MainActivity extends AppCompatActivity {
     if (!running) btnStop.setText("停止");
     for (int i = 0; i < modeGroup.getChildCount(); i++) modeGroup.getChildAt(i).setEnabled(!running);
     switchCleanNames.setEnabled(!running);
+    if (switchCleanLogin != null) switchCleanLogin.setEnabled(!running);
     sliderConcurrency.setEnabled(!running);
     for (KindRow row : kindRows.values()) {
       if (row.sw != null) row.sw.setEnabled(!running);
@@ -526,6 +538,7 @@ public class MainActivity extends AppCompatActivity {
     checkSettings.checkVideo = p.getBoolean("kindVideo", true);
     checkSettings.checkAudio = p.getBoolean("kindAudio", true);
     checkSettings.checkFile = p.getBoolean("kindFile", true);
+    deleteCaptcha = p.getBoolean("deleteCaptcha", true);
     checkSettings.normalize();
   }
 
@@ -546,6 +559,7 @@ public class MainActivity extends AppCompatActivity {
         .putBoolean("kindVideo", checkSettings.checkVideo)
         .putBoolean("kindAudio", checkSettings.checkAudio)
         .putBoolean("kindFile", checkSettings.checkFile)
+        .putBoolean("deleteCaptcha", deleteCaptcha)
         .apply();
   }
 
@@ -594,6 +608,8 @@ public class MainActivity extends AppCompatActivity {
     cbKindVideo.setChecked(checkSettings.checkVideo);
     cbKindAudio.setChecked(checkSettings.checkAudio);
     cbKindFile.setChecked(checkSettings.checkFile);
+    MaterialCheckBox cbDeleteCaptcha = v.findViewById(R.id.cbDeleteCaptcha);
+    if (cbDeleteCaptcha != null) cbDeleteCaptcha.setChecked(deleteCaptcha);
     cbCategory.setEnabled(cbInfo.isChecked());
     cbContent.setEnabled(cbInfo.isChecked() && cbCategory.isChecked());
   }
@@ -623,6 +639,8 @@ public class MainActivity extends AppCompatActivity {
     checkSettings.checkVideo = ((MaterialCheckBox) v.findViewById(R.id.cbKindVideo)).isChecked();
     checkSettings.checkAudio = ((MaterialCheckBox) v.findViewById(R.id.cbKindAudio)).isChecked();
     checkSettings.checkFile = ((MaterialCheckBox) v.findViewById(R.id.cbKindFile)).isChecked();
+    MaterialCheckBox cbDeleteCaptcha = v.findViewById(R.id.cbDeleteCaptcha);
+    if (cbDeleteCaptcha != null) deleteCaptcha = cbDeleteCaptcha.isChecked();
     checkSettings.normalize();
   }
 
@@ -657,6 +675,7 @@ public class MainActivity extends AppCompatActivity {
     cbCategory.setOnCheckedChangeListener((b, on) -> { cbContent.setEnabled(on && cbInfo.isChecked()); if (!on) cbContent.setChecked(false); });
     v.findViewById(R.id.btnReset).setOnClickListener(x -> {
       checkSettings.resetToDefaults();
+      deleteCaptcha = true;
       saveCheckSettings();
       bindCheckDialog(v);
     });
@@ -962,6 +981,27 @@ public class MainActivity extends AppCompatActivity {
     if (tvExportPreview == null) return;
     int n = exportRecords().size();
     tvExportPreview.setText("当前将导入 / 保存 " + n + " 条");
+    if (tvFilterHints == null) return;
+    if (result == null) {
+      tvFilterHints.setVisibility(View.GONE);
+      return;
+    }
+    int login = LoginDetector.count(result.getRetained());
+    int captcha = ExportFilter.captchaCount(checkResults);
+    StringBuilder sb = new StringBuilder();
+    if (login > 0) {
+      sb.append("需要登录 ").append(login).append(cleanLogin ? "（将清理）" : "（已保留）");
+    }
+    if (captcha > 0) {
+      if (sb.length() > 0) sb.append(" · ");
+      sb.append("弹窗验证码 ").append(captcha).append(deleteCaptcha ? "（将删除）" : "（已保留）");
+    }
+    if (sb.length() == 0) {
+      tvFilterHints.setVisibility(View.GONE);
+    } else {
+      tvFilterHints.setVisibility(View.VISIBLE);
+      tvFilterHints.setText(sb.toString());
+    }
   }
 
   private Set<SourceKind> selectedExportKinds() {
@@ -992,19 +1032,8 @@ public class MainActivity extends AppCompatActivity {
 
   private List<SourceRecord> exportRecords() {
     if (result == null) return Collections.emptyList();
-    List<SourceRecord> base = result.getRetained();
-    if (onlyUsable && !checkResults.isEmpty()) {
-      Set<String> good = new HashSet<>();
-      for (CheckSourceResult r : checkResults) {
-        if (r.isUsable() && r.source.getUrl() != null) good.add(r.source.getUrl());
-      }
-      List<SourceRecord> usable = new ArrayList<>();
-      for (SourceRecord s : base) if (s.getUrl() != null && good.contains(s.getUrl())) usable.add(s);
-      base = usable;
-    }
-    Set<SourceKind> allow = selectedExportKinds();
-    if (allow.isEmpty()) return Collections.emptyList();
-    return SourceKind.filter(base, allow);
+    return ExportFilter.apply(result.getRetained(), checkResults, cleanLogin, onlyUsable, deleteCaptcha,
+        selectedExportKinds());
   }
 
   private void applyFastestOutcome(FastestUsableDedupe.Outcome outcome) {
@@ -1029,17 +1058,16 @@ public class MainActivity extends AppCompatActivity {
   private List<Object> exportPayload(List<SourceRecord> list) {
     if (list == null || list.isEmpty()) return Collections.emptyList();
     List<Object> payload = new ArrayList<>();
-    String stamp = new SimpleDateFormat("yyyy-M-d", Locale.CHINA).format(new Date());
-    String mark = "✔" + stamp + "检验去重（优质" + list.size() + "）";
+    String date = GroupTagger.today();
+    Map<SourceKind, Integer> kindCounts = SourceKind.counts(list);
     for (SourceRecord s : list) {
       Map<String, Object> m = new LinkedHashMap<>(s.getRaw());
       m.put("bookSourceName", s.getName());
       Object g = m.get("bookSourceGroup");
       String gs = g == null ? "" : String.valueOf(g);
-      // replace previous inspection marks to avoid stacking
-      gs = gs.replaceAll("(?:,)?✔\\d{4}-\\d{1,2}-\\d{1,2}检验去重（优质\\d+）", "");
-      if (gs.startsWith(",")) gs = gs.substring(1);
-      m.put("bookSourceGroup", gs.isEmpty() ? mark : gs + "," + mark);
+      SourceKind kind = SourceKind.of(s);
+      int kindCount = kindCounts.get(kind) == null ? 0 : kindCounts.get(kind);
+      m.put("bookSourceGroup", GroupTagger.apply(gs, kind, kindCount, date));
       // attach check groups if any
       for (CheckSourceResult cr : checkResults) {
         if (cr.source.getUrl() != null && cr.source.getUrl().equals(s.getUrl()) && !cr.groups.isEmpty()) {

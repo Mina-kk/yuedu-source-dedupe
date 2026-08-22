@@ -30,7 +30,7 @@ public class FetchPolicyTest {
     assertTrue(FetchPolicy.isRetryable(new SocketTimeoutException("read timed out")));
     assertTrue(FetchPolicy.isRetryable(new ConnectException("failed to connect")));
     assertTrue(FetchPolicy.isRetryable(new SocketException("Connection reset")));
-    assertTrue(FetchPolicy.isRetryable(new UnknownHostException("dns")));
+    assertFalse(FetchPolicy.isRetryable(new UnknownHostException("dns")));
     assertTrue(FetchPolicy.isRetryable(new java.io.IOException("HTTP 429")));
     assertTrue(FetchPolicy.isRetryable(new java.io.IOException("HTTP 503")));
     assertTrue(FetchPolicy.isRetryable(new java.io.IOException("empty body")));

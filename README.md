@@ -2,6 +2,17 @@
 
 用于整理、去重和校验阅读书源 JSON 的 Android 应用。
 
+## 3.0.5-md3 更新
+
+- 导出保留原分组，并追加 `✔年月日分类（数量）`，例如 `✔2026-8-23小说（120）`。
+- 去重页「清理需要登录的源」（默认开）。
+- 检验配置「删除弹窗验证码的源」（默认勾）。
+- 检验对话框阶段勾选、校验类型各排一行。
+- 检验进度卡固定两行，避免窗口抖动。
+- 解析下载：同域最多 2 路并行；请求 gzip；连接超时 5 秒；DNS 失败不重试。
+
+详细说明见 [docs/CHECK_SOURCE.md](docs/CHECK_SOURCE.md) 与 [docs/RELEASE_NOTES_v3.0.5-md3.md](docs/RELEASE_NOTES_v3.0.5-md3.md)。
+
 ## 3.0.2-md3 更新
 
 - 检验按阅读 CheckSource 分组，不以「网页能打开」判定可用。
@@ -98,9 +109,9 @@
 APK 在 [GitHub Releases](https://github.com/Mina-kk/yuedu-source-dedupe/releases) 发布。
 
 ```text
-文件：yuedu-3.0.2-md3.apk
-大小：6,822,476 字节
-SHA-256：c4db83abc5b1cc1eca14769a09adaa71f9d4f9b941e71d5a1a3294c9e494ea18
+文件：yuedu-3.0.5-md3.apk
+大小：6,758,022 字节
+SHA-256：98cf2aad385305e7d5321b9dc8f505defea4847c2b5557ffe1fde6eb0a5b66e6
 签名证书 SHA-1：4b8fda609b4a959f0b93937b14ef42ead81fae54
 ```
 
@@ -134,7 +145,7 @@ app/build/outputs/apk/debug/app-debug.apk
 - 搜索关键词空白回退和自定义保留。
 - 书源类型判断和内容探测。
 
-最终构建中 69 项 JVM 测试全部通过。
+最终构建中 87 项 JVM 测试全部通过。
 
 ## 当前限制
 

@@ -200,11 +200,17 @@ public final class FetchManager {
   }
 
   private int estimateCount(String body) {
-    try {
-      return SourceParser.parseArray(body, 0).getRecords().size();
-    } catch (Exception e) {
-      return 0;
+    if (body == null) return 0;
+    int n = 0;
+    int from = 0;
+    while (true) {
+      int i = body.indexOf("bookSourceUrl", from);
+      if (i < 0) break;
+      n++;
+      from = i + 13;
+      if (n > 50_000) break;
     }
+    return n;
   }
 
   private String doFetch(String url) throws Exception {
@@ -256,6 +262,7 @@ public final class FetchManager {
     c.setInstanceFollowRedirects(true);
     c.setRequestProperty("User-Agent", FetchPolicy.USER_AGENT);
     c.setRequestProperty("Accept", "application/json,text/plain,*/*");
+    c.setRequestProperty("Accept-Encoding", "gzip");
     c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     String origin = FetchPolicy.origin(url);
     if (origin != null) c.setRequestProperty("Referer", origin);

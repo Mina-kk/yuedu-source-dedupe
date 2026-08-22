@@ -12,9 +12,9 @@ import java.util.Locale;
 /** Parse-download policy: same-host pacing and which failures are worth a short retry. */
 public final class FetchPolicy {
   public static final int MAX_ATTEMPTS = 3;
-  public static final int MAX_PER_HOST = 1;
-  public static final int CONNECT_TIMEOUT_MS = 12_000;
-  public static final int READ_TIMEOUT_MS = 90_000;
+  public static final int MAX_PER_HOST = 2;
+  public static final int CONNECT_TIMEOUT_MS = 5_000;
+  public static final int READ_TIMEOUT_MS = 45_000;
   public static final String USER_AGENT =
       "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36";
 
@@ -54,7 +54,7 @@ public final class FetchPolicy {
     if (e == null) return false;
     if (e instanceof SocketTimeoutException) return true;
     if (e instanceof ConnectException) return true;
-    if (e instanceof UnknownHostException) return true;
+    if (e instanceof UnknownHostException) return false;
     if (e instanceof SocketException) return true;
     if (e instanceof InterruptedIOException) {
       String m = String.valueOf(e.getMessage()).toLowerCase(Locale.ROOT);

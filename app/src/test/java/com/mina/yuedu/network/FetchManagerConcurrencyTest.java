@@ -37,18 +37,17 @@ public class FetchManagerConcurrencyTest {
     }
   }
 
-  @Test public void sameHostTakenOneAtATime() {
+  @Test public void sameHostTakenTwoAtATime() {
     FetchManager.QueueState q = new FetchManager.QueueState(Arrays.asList(
         "https://www.yckceo.com/a.json",
         "https://yckceo.com/b.json",
         "https://www.yckceo.com/c.json"), 10);
     String first = q.takeNext();
+    String second = q.takeNext();
     assertEquals("https://www.yckceo.com/a.json", first);
+    assertEquals("https://yckceo.com/b.json", second);
     assertEquals(null, q.takeNext());
     q.releaseHost(first);
-    String second = q.takeNext();
-    assertEquals("https://yckceo.com/b.json", second);
-    q.releaseHost(second);
     assertEquals("https://www.yckceo.com/c.json", q.takeNext());
   }
 

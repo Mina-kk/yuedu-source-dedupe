@@ -28,8 +28,8 @@ public final class ResultInspect {
     if (body == null || body.trim().isEmpty()) return new Hit(false, "empty body", urls);
     String t = body.trim();
     String low = t.toLowerCase(Locale.ROOT);
-    if (low.contains("just a moment") && low.contains("cloudflare")) {
-      return new Hit(false, "cloudflare", urls);
+    if (CaptchaInspect.isCaptcha(t)) {
+      return new Hit(false, CaptchaInspect.GROUP, urls);
     }
     if (t.startsWith("{") || t.startsWith("[")) {
       Matcher m = JSON_URL.matcher(t);
@@ -63,9 +63,8 @@ public final class ResultInspect {
     if (body == null || body.trim().isEmpty()) return new Hit(false, "empty", new ArrayList<>());
     String t = body.trim();
     if (t.length() < 80) return new Hit(false, "too short", new ArrayList<>());
-    String low = t.toLowerCase(Locale.ROOT);
-    if (low.contains("just a moment") && low.contains("cloudflare")) {
-      return new Hit(false, "cloudflare", new ArrayList<>());
+    if (CaptchaInspect.isCaptcha(t)) {
+      return new Hit(false, CaptchaInspect.GROUP, new ArrayList<>());
     }
     List<String> urls = new ArrayList<>();
     Matcher m = JSON_URL.matcher(t);
@@ -97,8 +96,8 @@ public final class ResultInspect {
     if (body == null || body.trim().isEmpty()) return new Hit(false, "empty", new ArrayList<>());
     String t = body.trim();
     String low = t.toLowerCase(Locale.ROOT);
-    if (low.contains("just a moment") && low.contains("cloudflare")) {
-      return new Hit(false, "cloudflare", new ArrayList<>());
+    if (CaptchaInspect.isCaptcha(t)) {
+      return new Hit(false, CaptchaInspect.GROUP, new ArrayList<>());
     }
     for (String ext : exts) {
       if (low.contains("." + ext)) return new Hit(true, "media " + ext, new ArrayList<>());

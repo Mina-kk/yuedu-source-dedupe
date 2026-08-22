@@ -131,7 +131,9 @@ public final class CheckSourceEngine {
       if (once == null) return null;
       collected.add(once);
       if (once.status == CheckSourceResult.Status.SUCCESS) success++;
-      if (once.groups != null && (once.groups.contains("网站失效") || once.groups.contains("校验超时"))) {
+      if (once.groups != null && (once.groups.contains("网站失效")
+          || once.groups.contains("校验超时")
+          || once.groups.contains(CaptchaInspect.GROUP))) {
         break;
       }
       if (CheckAggregator.decided(rounds, success, collected.size())) break;
@@ -185,8 +187,13 @@ public final class CheckSourceEngine {
     Map<String, String> headers = HttpProbe.parseSourceHeader(source.rawString("header"));
     int stepTimeout = (int) Math.min(Math.max(settings.timeoutMillis() / 3L, 8000L), 30000L);
 
-    if (!probeSite(base, headers, Math.min(stepTimeout, 10000), settings.keyword)) {
+    CaptchaInspect.SiteStatus site = probeSite(base, headers, Math.min(stepTimeout, 10000), settings.keyword);
+    if (site == CaptchaInspect.SiteStatus.DEAD) {
       bad.add("网站失效");
+      return uniq(bad);
+    }
+    if (site == CaptchaInspect.SiteStatus.CAPTCHA) {
+      bad.add(CaptchaInspect.GROUP);
       return uniq(bad);
     }
     if (Thread.currentThread().isInterrupted() || cancelled) return uniq(bad);
@@ -206,20 +213,24 @@ public final class CheckSourceEngine {
         } else {
           try {
             HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
-            ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
-            if (!r.httpOk() || !hit.ok) bad.add("搜索失效");
-            else if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+            if (CaptchaInspect.isCaptcha(r.body)) {
+              bad.add(CaptchaInspect.GROUP);
+            } else {
+              ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
+              if (!r.httpOk() || !hit.ok) bad.add("搜索失效");
+              else if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+            }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "搜索失效");
           }
         }
       }
     }
+    if (bad.contains(CaptchaInspect.GROUP)) return uniq(bad);
     if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkDiscovery) {
       String explore = source.rawString("exploreUrl");
-      Object ruleExplore = source.getRaw().get("ruleExplore");
       if (explore != null && !explore.trim().isEmpty()) {
         String first = firstExploreUrl(explore);
         AnalyzeUrlLite req = AnalyzeUrlLite.parse(first, base, settings.keyword, 1);
@@ -228,17 +239,20 @@ public final class CheckSourceEngine {
         } else {
           try {
             HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
-            ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
-            boolean ruleOk = ResultInspect.hasRule(ruleExplore);
-            if ((!r.httpOk() || !hit.ok) && !ruleOk) bad.add("发现失效");
-            else if (!r.httpOk() || !hit.ok) bad.add("发现失效");
-            else if (bookUrl == null && !hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+            if (CaptchaInspect.isCaptcha(r.body)) {
+              bad.add(CaptchaInspect.GROUP);
+            } else {
+              ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
+              if (!r.httpOk() || !hit.ok) bad.add("发现失效");
+              else if (bookUrl == null && !hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+            }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "发现失效");
           }
         }
       }
     }
+    if (bad.contains(CaptchaInspect.GROUP)) return uniq(bad);
     if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     Map<String, Object> ruleInfo = source.ruleMap("ruleBookInfo");
@@ -252,6 +266,10 @@ public final class CheckSourceEngine {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(bookUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
+          if (CaptchaInspect.isCaptcha(r.body)) {
+            bad.add(CaptchaInspect.GROUP);
+            return uniq(bad);
+          }
           ResultInspect.Hit hit = ResultInspect.inspectBookPage(r.body);
           if (!r.httpOk() || !hit.ok) bad.add("详情失效");
           else {
@@ -269,6 +287,7 @@ public final class CheckSourceEngine {
         }
       }
     }
+    if (bad.contains(CaptchaInspect.GROUP)) return uniq(bad);
     if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkCategory) {
@@ -278,6 +297,10 @@ public final class CheckSourceEngine {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(tocUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
+          if (CaptchaInspect.isCaptcha(r.body)) {
+            bad.add(CaptchaInspect.GROUP);
+            return uniq(bad);
+          }
           ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : tocUrl);
           if (!r.httpOk() || !hit.ok) bad.add("目录失效");
           else if (!hit.bookUrls.isEmpty()) chapterUrl = hit.bookUrls.get(0);
@@ -286,6 +309,7 @@ public final class CheckSourceEngine {
         }
       }
     }
+    if (bad.contains(CaptchaInspect.GROUP)) return uniq(bad);
     if (Thread.currentThread().isInterrupted() || cancelled) return bad;
 
     if (settings.checkContent) {
@@ -296,8 +320,12 @@ public final class CheckSourceEngine {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(chapterUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
-          ResultInspect.Hit hit = ResultInspect.inspectContent(r.body, kind);
-          if (!r.httpOk() || !hit.ok) bad.add(contentFail);
+          if (CaptchaInspect.isCaptcha(r.body)) {
+            bad.add(CaptchaInspect.GROUP);
+          } else {
+            ResultInspect.Hit hit = ResultInspect.inspectContent(r.body, kind);
+            if (!r.httpOk() || !hit.ok) bad.add(contentFail);
+          }
         } catch (Exception e) {
           bad.add(contentFail);
         }
@@ -314,7 +342,7 @@ public final class CheckSourceEngine {
     return out;
   }
 
-  private boolean probeSite(String base, Map<String, String> headers, int timeoutMs, String keyword) {
+  private CaptchaInspect.SiteStatus probeSite(String base, Map<String, String> headers, int timeoutMs, String keyword) {
     String host;
     try {
       host = UrlNormalizer.hostKey(base);
@@ -323,17 +351,17 @@ public final class CheckSourceEngine {
     }
     long now = System.currentTimeMillis();
     CachedSite cached = siteCache.get(host);
-    if (cached != null && now - cached.at < SITE_CACHE_TTL_MS) return cached.ok;
-    boolean ok;
+    if (cached != null && now - cached.at < SITE_CACHE_TTL_MS) return cached.status;
+    CaptchaInspect.SiteStatus status;
     try {
       AnalyzeUrlLite baseReq = AnalyzeUrlLite.parse(base, base, keyword, 1);
       HttpProbe.Response br = HttpProbe.fetch(baseReq, headers, timeoutMs);
-      ok = br.httpOk();
+      status = CaptchaInspect.classify(br.code, br.body);
     } catch (Exception e) {
-      ok = false;
+      status = CaptchaInspect.SiteStatus.DEAD;
     }
-    siteCache.put(host, new CachedSite(ok, now));
-    return ok;
+    siteCache.put(host, new CachedSite(status, now));
+    return status;
   }
 
   private static String firstExploreUrl(String explore) {
@@ -350,9 +378,9 @@ public final class CheckSourceEngine {
   }
 
   private static final class CachedSite {
-    final boolean ok;
+    final CaptchaInspect.SiteStatus status;
     final long at;
-    CachedSite(boolean ok, long at) { this.ok = ok; this.at = at; }
+    CachedSite(CaptchaInspect.SiteStatus status, long at) { this.status = status; this.at = at; }
   }
 
   private static final class AtomicDone {

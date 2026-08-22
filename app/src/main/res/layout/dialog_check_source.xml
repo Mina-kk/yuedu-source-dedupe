@@ -95,41 +95,63 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/cbSearch"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:checked="true"
-            android:text="@string/search" />
+            android:gravity="center"
+            android:orientation="horizontal">
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/cbDiscovery"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:checked="true"
-            android:text="@string/discovery" />
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/cbSearch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:checked="true"
+                android:text="@string/search" />
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/cbInfo"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:checked="true"
-            android:text="@string/source_tab_info" />
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/cbDiscovery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:checked="true"
+                android:text="@string/discovery" />
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/cbCategory"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:checked="true"
-            android:text="@string/chapter_list" />
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/cbInfo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:checked="true"
+                android:text="@string/source_tab_info" />
 
-        <com.google.android.material.checkbox.MaterialCheckBox
-            android:id="@+id/cbContent"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:checked="true"
-            android:text="@string/source_tab_content" />
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/cbCategory"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:checked="true"
+                android:text="@string/chapter_list" />
+
+            <com.google.android.material.checkbox.MaterialCheckBox
+                android:id="@+id/cbContent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
+                android:checked="true"
+                android:text="@string/source_tab_content" />
+        </LinearLayout>
 
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/tilCheckKeyword"
@@ -160,13 +182,16 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center"
             android:orientation="horizontal">
 
             <com.google.android.material.checkbox.MaterialCheckBox
                 android:id="@+id/cbKindNovel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:checked="true"
                 android:text="@string/kind_novel" />
 
@@ -174,7 +199,9 @@
                 android:id="@+id/cbKindComic"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:checked="true"
                 android:text="@string/kind_comic" />
 
@@ -182,20 +209,19 @@
                 android:id="@+id/cbKindVideo"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:checked="true"
                 android:text="@string/kind_video" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
 
             <com.google.android.material.checkbox.MaterialCheckBox
                 android:id="@+id/cbKindAudio"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:checked="true"
                 android:text="@string/kind_audio" />
 
@@ -203,9 +229,20 @@
                 android:id="@+id/cbKindFile"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp"
                 android:checked="true"
                 android:text="@string/kind_file" />
         </LinearLayout>
+
+        <com.google.android.material.checkbox.MaterialCheckBox
+            android:id="@+id/cbDeleteCaptcha"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:checked="true"
+            android:text="@string/delete_captcha" />
 
         <LinearLayout
             android:layout_width="match_parent"
