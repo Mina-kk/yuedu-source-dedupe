@@ -8,8 +8,8 @@ android {
         applicationId = "com.mina.yuedu"
         minSdk = 24
         targetSdk = 35
-        versionCode = 307
-        versionName = "3.0.5-md3"
+        versionCode = 308
+        versionName = "3.0.6-md3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -30,7 +30,9 @@ android {
             isMinifyEnabled = false
         }
         release {
-            signingConfig = signingConfigs.getByName("debugKey")
+            // 产出 unsigned APK：正式签名由父代理用原签名流程在构建后完成，
+            // release 不混用 debugKey，也不在构建脚本内嵌任何密码/密钥。
+            signingConfig = null
             isMinifyEnabled = false
         }
     }

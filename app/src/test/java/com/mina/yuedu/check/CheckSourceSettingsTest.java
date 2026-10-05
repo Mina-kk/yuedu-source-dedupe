@@ -124,4 +124,52 @@ public class CheckSourceSettingsTest {
     assertTrue(settings.checkVideo);
     assertTrue(settings.checkComic);
   }
+
+  // ===== 「快速准确」预设 =====
+
+  @Test public void quickAccuratePresetAppliesFastParams() {
+    CheckSourceSettings s = new CheckSourceSettings();
+    s.probeRounds = 10;
+    s.timeoutSeconds = 300;
+    s.applyQuickAccurate();
+    assertTrue(s.quickAccurate);
+    assertTrue(s.quickMode);
+    assertEquals(3, s.probeRounds);
+    assertEquals(60L, s.timeoutSeconds);
+    assertTrue(s.checkSearch);
+    assertTrue(s.checkInfo);
+    assertFalse(s.checkDiscovery);
+    assertFalse(s.checkCategory);
+    assertFalse(s.checkContent);
+  }
+
+  @Test public void quickAccurateKeepsCleanupFlagsUntouched() {
+    // 预设绝不动 deleteCaptcha/cleanLogin —— 用户清理语义不受一键入口影响。
+    CheckSourceSettings s = new CheckSourceSettings();
+    s.deleteCaptcha = false;
+    s.cleanLogin = false;
+    s.keyword = "斗破苍穹";
+    s.okStatusRanges = "200,403";
+    s.applyQuickAccurate();
+    assertFalse(s.deleteCaptcha);
+    assertFalse(s.cleanLogin);
+    assertEquals("斗破苍穹", s.keyword);
+    assertEquals("200,403", s.okStatusRanges);
+  }
+
+  @Test public void quickAccurateOddRoundsPreventTie() {
+    // 3 轮：过半通过需 ≥2 成功，无平票；2 轮时 1 成功即不过半（success*2 > n 为 2>2 假）。
+    assertTrue(CheckAggregator.decided(3, 2, 2));
+    assertFalse(CheckAggregator.decided(3, 1, 1));
+    assertEquals(3, CheckSourceSettings.QUICK_PROBE_ROUNDS);
+    assertEquals(1, CheckSourceSettings.QUICK_PROBE_ROUNDS % 2);
+  }
+
+  @Test public void quickAccurateFlagRoundTripsThroughCopy() {
+    CheckSourceSettings s = new CheckSourceSettings();
+    s.applyQuickAccurate();
+    CheckSourceSettings c = s.copy();
+    assertTrue(c.quickAccurate);
+    assertEquals(3, c.probeRounds);
+  }
 }

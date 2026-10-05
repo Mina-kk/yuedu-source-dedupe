@@ -2,11 +2,17 @@ package com.mina.yuedu.check;
 
 import com.mina.yuedu.core.UrlNormalizer;
 import com.mina.yuedu.model.SourceRecord;
+import com.mina.yuedu.network.SystemProxy;
+import java.net.Proxy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -152,28 +158,56 @@ public final class CheckSourceEngine {
   private CheckSourceResult doCheckOnce(SourceRecord source, CheckSourceSettings settings, SourceKind kind) {
     long start = System.currentTimeMillis();
     List<String> groups = new ArrayList<String>();
+    // 记录本轮真实执行且命中的步骤（不使用"无失败标记"反推，避免把没跑到的步骤误计成功）
+    Set<String> hitSteps = new LinkedHashSet<String>();
+    // 启用且有规则可验但链路 URL 缺失、整步没跑到的步骤（"详情"/"目录"/"正文"）——不静默放过
+    Set<String> uncovered = new LinkedHashSet<String>();
     try {
-      groups.addAll(doCheck(source, settings, kind));
+      groups.addAll(doCheck(source, settings, kind, hitSteps, uncovered));
       if (cancelled || Thread.currentThread().isInterrupted()) return null;
       long cost = System.currentTimeMillis() - start;
+      // 步骤成功 = 本轮确实跑到且内容命中（hitSteps）；不采用"未失败即成功"的并集拼凑。
+      Set<String> succeededSteps = new LinkedHashSet<String>(hitSteps);
       if (groups.contains("校验超时")) {
-        return new CheckSourceResult(source, CheckSourceResult.Status.TIMEOUT, groups, "timeout", cost, kind);
+        return new CheckSourceResult(source, CheckSourceResult.Status.TIMEOUT, groups, "timeout", cost,
+            kind, 1, 0, 0, 1, cost, succeededSteps);
+      }
+      if (groups.isEmpty() && uncovered.isEmpty()) {
+        // ResultInspect 是页面启发式：命中的步骤只是"网页探测通过"，ruleToc/ruleContent 并未
+        // 按规则真实执行，不能宣称全链路规则可用。
+        return new CheckSourceResult(source, CheckSourceResult.Status.SUCCESS, groups,
+            "网页探测通过，规则未实测", cost,
+            kind, 1, 1, 0, 0, cost, succeededSteps);
       }
       if (groups.isEmpty()) {
-        return new CheckSourceResult(source, CheckSourceResult.Status.SUCCESS, groups, "校验成功", cost, kind);
+        // 无失败但有未覆盖步骤：探测到的步骤全过但证据不全——不算可用也不当失败误删，
+        // 保留并标"待复核"（SKIPPED），导出过滤与"仅可用"开关都不会把它当失败剔除。
+        List<String> g = new ArrayList<String>();
+        for (String s : uncovered) g.add(s + "未覆盖");
+        g.add("待复核");
+        return new CheckSourceResult(source, CheckSourceResult.Status.SKIPPED, g,
+            String.join(",", g), cost, kind, 1, 0, 0, 0, cost, succeededSteps);
       }
       return new CheckSourceResult(source, CheckSourceResult.Status.FAILED, groups,
-          String.join(",", groups), cost, kind);
+          String.join(",", groups), cost, kind, 1, 0, 1, 0, cost, succeededSteps);
     } catch (Exception e) {
       if (cancelled || Thread.currentThread().isInterrupted()) return null;
       groups.add("网站失效");
       return new CheckSourceResult(source, CheckSourceResult.Status.FAILED, groups,
           e.getMessage() == null ? "error" : e.getMessage(),
-          System.currentTimeMillis() - start, kind);
+          System.currentTimeMillis() - start, kind, 1, 0, 1, 0, 0,
+          Collections.<String>emptySet());
     }
   }
 
   private List<String> doCheck(SourceRecord source, CheckSourceSettings settings, SourceKind kind) {
+    return doCheck(source, settings, kind, null, null);
+  }
+
+  /** @param hitSteps 非空时，把本轮真实执行且内容命中的步骤名写入（"搜索"/"发现"/"详情"/"目录"/"正文"）。
+   *  @param uncovered 非空时，把"启用且有规则可验但链路 URL 缺失、整步没跑到"的步骤名写入。 */
+  private List<String> doCheck(SourceRecord source, CheckSourceSettings settings, SourceKind kind,
+                               Set<String> hitSteps, Set<String> uncovered) {
     List<String> bad = new ArrayList<String>();
     String base;
     try {
@@ -217,8 +251,14 @@ public final class CheckSourceEngine {
               bad.add(CaptchaInspect.GROUP);
             } else {
               ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
-              if (!r.httpOk() || !hit.ok) bad.add("搜索失效");
-              else if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+              // 内容不正确（被墙/污染）时用系统代理重试一次
+              if (!hit.ok) {
+                HttpProbe.Response r2 = retryWithProxy(r, req, headers, stepTimeout);
+                if (r2 != r) { r = r2; hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base); }
+              }
+              if (!stepOk(r, settings) || !hit.ok) bad.add("搜索失效");
+              else { if (hitSteps != null) hitSteps.add("搜索");
+                     if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0); }
             }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "搜索失效");
@@ -243,8 +283,13 @@ public final class CheckSourceEngine {
               bad.add(CaptchaInspect.GROUP);
             } else {
               ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base);
-              if (!r.httpOk() || !hit.ok) bad.add("发现失效");
-              else if (bookUrl == null && !hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0);
+              if (!hit.ok) {
+                HttpProbe.Response r2 = retryWithProxy(r, req, headers, stepTimeout);
+                if (r2 != r) { r = r2; hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : base); }
+              }
+              if (!stepOk(r, settings) || !hit.ok) bad.add("发现失效");
+              else { if (hitSteps != null) hitSteps.add("发现");
+                     if (bookUrl == null && !hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0); }
             }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "发现失效");
@@ -262,7 +307,10 @@ public final class CheckSourceEngine {
     if (settings.checkInfo) {
       if (!ResultInspect.hasRule(ruleInfo) && bookUrl == null) {
         bad.add("详情失效");
-      } else if (bookUrl != null) {
+      } else if (bookUrl == null) {
+        // 有规则但无链路 URL（上游搜索/发现没产出 bookUrl）：整步没跑到，记未覆盖而非静默通过
+        if (uncovered != null) uncovered.add("详情");
+      } else {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(bookUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -271,8 +319,13 @@ public final class CheckSourceEngine {
             return uniq(bad);
           }
           ResultInspect.Hit hit = ResultInspect.inspectBookPage(r.body);
-          if (!r.httpOk() || !hit.ok) bad.add("详情失效");
+          if (!hit.ok) {
+            HttpProbe.Response r2 = retryWithProxy(r, req, headers, stepTimeout);
+            if (r2 != r) { r = r2; hit = ResultInspect.inspectBookPage(r.body); }
+          }
+          if (!stepOk(r, settings) || !hit.ok) bad.add("详情失效");
           else {
+            if (hitSteps != null) hitSteps.add("详情");
             if (!hit.bookUrls.isEmpty()) tocUrl = hit.bookUrls.get(0);
             String initToc = ResultInspect.ruleString(ruleInfo, "tocUrl");
             if (initToc != null && !initToc.trim().isEmpty() && !initToc.contains("@js") && !initToc.contains("<js>")) {
@@ -293,7 +346,9 @@ public final class CheckSourceEngine {
     if (settings.checkCategory) {
       if (!ResultInspect.hasRule(ruleToc) && tocUrl == null) {
         bad.add("目录失效");
-      } else if (tocUrl != null) {
+      } else if (tocUrl == null) {
+        if (uncovered != null) uncovered.add("目录");
+      } else {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(tocUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -302,8 +357,13 @@ public final class CheckSourceEngine {
             return uniq(bad);
           }
           ResultInspect.Hit hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : tocUrl);
-          if (!r.httpOk() || !hit.ok) bad.add("目录失效");
-          else if (!hit.bookUrls.isEmpty()) chapterUrl = hit.bookUrls.get(0);
+          if (!hit.ok) {
+            HttpProbe.Response r2 = retryWithProxy(r, req, headers, stepTimeout);
+            if (r2 != r) { r = r2; hit = ResultInspect.inspectListPage(r.body, r.finalUrl != null ? r.finalUrl : tocUrl); }
+          }
+          if (!stepOk(r, settings) || !hit.ok) bad.add("目录失效");
+          else { if (hitSteps != null) hitSteps.add("目录");
+                 if (!hit.bookUrls.isEmpty()) chapterUrl = hit.bookUrls.get(0); }
         } catch (Exception e) {
           bad.add("目录失效");
         }
@@ -316,7 +376,9 @@ public final class CheckSourceEngine {
       String contentFail = kind.contentFailGroup();
       if (!ResultInspect.hasRule(ruleContent) && chapterUrl == null) {
         bad.add(contentFail);
-      } else if (chapterUrl != null) {
+      } else if (chapterUrl == null) {
+        if (uncovered != null) uncovered.add("正文");
+      } else {
         try {
           AnalyzeUrlLite req = AnalyzeUrlLite.parse(chapterUrl, base, settings.keyword, 1);
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -324,7 +386,12 @@ public final class CheckSourceEngine {
             bad.add(CaptchaInspect.GROUP);
           } else {
             ResultInspect.Hit hit = ResultInspect.inspectContent(r.body, kind);
-            if (!r.httpOk() || !hit.ok) bad.add(contentFail);
+            if (!hit.ok) {
+              HttpProbe.Response r2 = retryWithProxy(r, req, headers, stepTimeout);
+              if (r2 != r) { r = r2; hit = ResultInspect.inspectContent(r.body, kind); }
+            }
+            if (!stepOk(r, settings) || !hit.ok) bad.add(contentFail);
+            else if (hitSteps != null) hitSteps.add("正文");
           }
         } catch (Exception e) {
           bad.add(contentFail);
@@ -333,6 +400,65 @@ public final class CheckSourceEngine {
     }
 
     return uniq(bad);
+  }
+
+  /**
+   * 单步 HTTP 判定：状态码落在用户自定义可用区间（isHttpOk），且不是 Cloudflare 挑战页。
+   * 内容正确性仍由 ResultInspect 命中判定（调用方据此追加 hit.ok）。
+   */
+  private static boolean stepOk(HttpProbe.Response r, CheckSourceSettings settings) {
+    if (r == null) return false;
+    if (!settings.isHttpOk(r.code)) return false;
+    return !HttpProbe.isCloudflareChallenge(r.body);
+  }
+
+  /** 内容级代理回退：直连返回了可用状态码但内容不正确（被墙/污染），自动用系统代理重试一次。 */
+  private static HttpProbe.Response retryWithProxy(HttpProbe.Response r, AnalyzeUrlLite req,
+      Map<String, String> headers, int timeoutMs) {
+    if (r != null && r.code >= 200 && r.code < 500 && SystemProxy.get() != null) {
+      try {
+        return HttpProbe.fetch(req, headers, timeoutMs, SystemProxy.get());
+      } catch (Exception ignored) {}
+    }
+    return r;
+  }
+
+  /**
+   * 合并同域校验结果：对同域名分组，取每个校验步骤的并集。
+   * 例如 A1 搜索成功、A2 发现成功 → 合并后该域名搜索+发现都成功。
+   */
+  public static Map<String, MergeResult> mergeByDomain(List<CheckSourceResult> results) {
+    Map<String, List<CheckSourceResult>> byDomain = new LinkedHashMap<String, List<CheckSourceResult>>();
+    if (results != null) {
+      for (CheckSourceResult r : results) {
+        if (r == null || r.status == CheckSourceResult.Status.SKIPPED) continue;
+        String domain = extractDomain(r.source.getUrl());
+        byDomain.computeIfAbsent(domain, k -> new ArrayList<CheckSourceResult>()).add(r);
+      }
+    }
+    Map<String, MergeResult> merged = new LinkedHashMap<String, MergeResult>();
+    for (Map.Entry<String, List<CheckSourceResult>> e : byDomain.entrySet()) {
+      Set<String> allSucceeded = new LinkedHashSet<String>();
+      for (CheckSourceResult r : e.getValue()) {
+        if (r.succeededSteps != null) allSucceeded.addAll(r.succeededSteps);
+      }
+      merged.put(e.getKey(), new MergeResult(e.getKey(), e.getValue(), allSucceeded));
+    }
+    return merged;
+  }
+
+  public static final class MergeResult {
+    public final String domain;
+    public final List<CheckSourceResult> sources;
+    public final Set<String> mergedSucceededSteps;
+    public MergeResult(String domain, List<CheckSourceResult> sources, Set<String> mergedSucceededSteps) {
+      this.domain = domain; this.sources = sources; this.mergedSucceededSteps = mergedSucceededSteps;
+    }
+  }
+
+  private static String extractDomain(String url) {
+    try { return new java.net.URL(url).getHost().toLowerCase(Locale.ROOT).replaceFirst("^www\\.", ""); }
+    catch (Exception e) { return url; }
   }
 
   private static List<String> uniq(List<String> bad) {

@@ -31,9 +31,13 @@
     <string name="check_elapsed">检验耗时 %1$s</string>
     <string name="save_json">保存 JSON</string>
     <string name="clear_all">清空</string>
-    <string name="only_usable">仅导出可用源</string>
+    <string name="only_usable">仅导出探测通过源（规则未实测，将排除待复核）</string>
     <string name="clean_login">清理需要登录的源</string>
     <string name="delete_captcha">删除弹窗验证码的源</string>
+    <string name="quick_mode">快速模式（仅搜索+详情，手动轮数/超时）</string>
+    <string name="quick_accurate">快速准确（推荐：仅搜索+详情 · 3 轮 · 超时 60s）</string>
+    <string name="quick_accurate_desc">过半通过才判可用，减少抖动误判；只测网页可达性不代表阅读规则全链路可用；未跑到的步骤保留待复核，不误删；不影响登录/验证码清理开关</string>
+    <string name="ok_status_ranges">可用 HTTP 状态码（如 200-399 或 200,403,500-502）</string>
     <string name="ok">确定</string>
     <string name="cancel">取消</string>
 </resources>

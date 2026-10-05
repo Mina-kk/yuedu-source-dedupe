@@ -86,6 +86,7 @@ public class MainActivity extends AppCompatActivity {
   private DedupeMode mode = DedupeMode.STANDARD;
   private DedupeResult result;
   private List<CheckSourceResult> checkResults = new ArrayList<>();
+  private volatile CheckResultIndex checkIndex = CheckResultIndex.of(null);
   private FastestUsableDedupe.Outcome fastestOutcome;
   private FetchManager fetchManager;
   private CheckSourceEngine checkEngine;
@@ -121,6 +122,8 @@ public class MainActivity extends AppCompatActivity {
     tabs.addTab(tabs.newTab().setText(R.string.tab_yck));
 
     yckSite = YckSite.fromPreference(getSharedPreferences("yck", MODE_PRIVATE).getString("site", "main"));
+    // 读取一次系统代理，供校验/下载 HTTP 请求在被墙/污染时回退使用
+    com.mina.yuedu.network.SystemProxy.init(this);
     loadCheckSettings();
 
     dedupePage = getLayoutInflater().inflate(R.layout.page_dedupe, pageContainer, false);
@@ -235,6 +238,7 @@ public class MainActivity extends AppCompatActivity {
       if (!checked) return;
       if (id == R.id.modeStandard) mode = DedupeMode.STANDARD;
       else if (id == R.id.modeStrict) mode = DedupeMode.STRICT;
+      else if (id == R.id.modeName) mode = DedupeMode.NAME;
       else mode = DedupeMode.AGGRESSIVE;
       operationMode.select(mode);
       updateModeDesc();
@@ -296,7 +300,8 @@ public class MainActivity extends AppCompatActivity {
     operationMode.select(mode); operationMode.start(); mode = operationMode.resultMode();
     cleanNames = switchCleanNames.isChecked();
     concurrency = Math.round(sliderConcurrency.getValue());
-    partial = false; discard = false; checkResults.clear(); fastestOutcome = null;
+    partial = false; discard = false; checkResults.clear();
+    checkIndex = CheckResultIndex.of(null); fastestOutcome = null;
     stopElapsedTicker(false);
     synchronized (buckets) { buckets.replaceNetwork(Collections.emptyList()); }
     synchronized (extraInvalid) { extraInvalid.clear(); }
@@ -477,7 +482,8 @@ public class MainActivity extends AppCompatActivity {
     synchronized (buckets) { buckets.clearAll(); }
     synchronized (extraInvalid) { extraInvalid.clear(); }
     synchronized (discovered) { discovered.clear(); }
-    localFileCount = 0; nextOrderSeq.set(0); result = null; checkResults.clear(); fastestOutcome = null; partial = false;
+    localFileCount = 0; nextOrderSeq.set(0); result = null; checkResults.clear();
+    checkIndex = CheckResultIndex.of(null); fastestOutcome = null; partial = false;
     urlInbox.clear();
     stopElapsedTicker(false);
     fetchRunning = false; checkRunning = false; checkCancelRequested = false;
@@ -539,6 +545,12 @@ public class MainActivity extends AppCompatActivity {
     checkSettings.checkAudio = p.getBoolean("kindAudio", true);
     checkSettings.checkFile = p.getBoolean("kindFile", true);
     deleteCaptcha = p.getBoolean("deleteCaptcha", true);
+    cleanLogin = p.getBoolean("cleanLogin", true);
+    checkSettings.okStatusRanges = p.getString("okStatusRanges", CheckSourceSettings.DEFAULT_OK_STATUS);
+    checkSettings.quickMode = p.getBoolean("quickMode", false);
+    checkSettings.quickAccurate = p.getBoolean("quickAccurate", false);
+    checkSettings.deleteCaptcha = deleteCaptcha;
+    checkSettings.cleanLogin = cleanLogin;
     checkSettings.normalize();
   }
 
@@ -560,6 +572,10 @@ public class MainActivity extends AppCompatActivity {
         .putBoolean("kindAudio", checkSettings.checkAudio)
         .putBoolean("kindFile", checkSettings.checkFile)
         .putBoolean("deleteCaptcha", deleteCaptcha)
+        .putBoolean("cleanLogin", cleanLogin)
+        .putString("okStatusRanges", checkSettings.okStatusRanges)
+        .putBoolean("quickMode", checkSettings.quickMode)
+        .putBoolean("quickAccurate", checkSettings.quickAccurate)
         .apply();
   }
 
@@ -608,10 +624,29 @@ public class MainActivity extends AppCompatActivity {
     cbKindVideo.setChecked(checkSettings.checkVideo);
     cbKindAudio.setChecked(checkSettings.checkAudio);
     cbKindFile.setChecked(checkSettings.checkFile);
-    MaterialCheckBox cbDeleteCaptcha = v.findViewById(R.id.cbDeleteCaptcha);
+    MaterialSwitch cbDeleteCaptcha = v.findViewById(R.id.switchDeleteCaptcha);
     if (cbDeleteCaptcha != null) cbDeleteCaptcha.setChecked(deleteCaptcha);
+    MaterialSwitch cbCleanLogin = v.findViewById(R.id.switchCleanLogin);
+    if (cbCleanLogin != null) cbCleanLogin.setChecked(cleanLogin);
+    MaterialSwitch cbQuickMode = v.findViewById(R.id.switchQuickMode);
+    if (cbQuickMode != null) cbQuickMode.setChecked(checkSettings.quickMode);
+    MaterialSwitch cbQuickAccurate = v.findViewById(R.id.switchQuickAccurate);
+    if (cbQuickAccurate != null) cbQuickAccurate.setChecked(checkSettings.quickAccurate);
+    TextInputEditText etOkStatus = v.findViewById(R.id.etOkStatus);
+    if (etOkStatus != null) etOkStatus.setText(checkSettings.okStatusRanges);
     cbCategory.setEnabled(cbInfo.isChecked());
     cbContent.setEnabled(cbInfo.isChecked() && cbCategory.isChecked());
+    // 快速模式开启时，发现/目录/正文保持禁用（与 cbQuickMode 监听联动一致）
+    if (checkSettings.quickMode) {
+      if (cbDiscovery != null) { cbDiscovery.setEnabled(false); cbDiscovery.setChecked(false); }
+      cbCategory.setEnabled(false); cbCategory.setChecked(false);
+      cbContent.setEnabled(false); cbContent.setChecked(false);
+    }
+    // 「快速准确」预设勾选时锁定探测参数滑杆，直观表明轮数/超时由预设接管
+    boolean preset = checkSettings.quickAccurate;
+    slider.setEnabled(!preset);
+    checkConcurrencySlider.setEnabled(!preset);
+    probeSlider.setEnabled(!preset);
   }
 
   private void collectCheckDialog(View v) {
@@ -639,8 +674,25 @@ public class MainActivity extends AppCompatActivity {
     checkSettings.checkVideo = ((MaterialCheckBox) v.findViewById(R.id.cbKindVideo)).isChecked();
     checkSettings.checkAudio = ((MaterialCheckBox) v.findViewById(R.id.cbKindAudio)).isChecked();
     checkSettings.checkFile = ((MaterialCheckBox) v.findViewById(R.id.cbKindFile)).isChecked();
-    MaterialCheckBox cbDeleteCaptcha = v.findViewById(R.id.cbDeleteCaptcha);
+    MaterialSwitch cbDeleteCaptcha = v.findViewById(R.id.switchDeleteCaptcha);
     if (cbDeleteCaptcha != null) deleteCaptcha = cbDeleteCaptcha.isChecked();
+    MaterialSwitch cbCleanLogin = v.findViewById(R.id.switchCleanLogin);
+    if (cbCleanLogin != null) cleanLogin = cbCleanLogin.isChecked();
+    MaterialSwitch cbQuickMode = v.findViewById(R.id.switchQuickMode);
+    if (cbQuickMode != null) checkSettings.quickMode = cbQuickMode.isChecked();
+    MaterialSwitch cbQuickAccurate = v.findViewById(R.id.switchQuickAccurate);
+    if (cbQuickAccurate != null) checkSettings.quickAccurate = cbQuickAccurate.isChecked();
+    if (checkSettings.quickAccurate) {
+      // 预设开启时强制套用预设参数，防止滑杆残留值覆盖 3 轮/60s
+      checkSettings.applyQuickAccurate();
+    }
+    TextInputEditText etOkStatus = v.findViewById(R.id.etOkStatus);
+    if (etOkStatus != null && etOkStatus.getText() != null) {
+      String ranges = etOkStatus.getText().toString().trim();
+      checkSettings.okStatusRanges = ranges.isEmpty() ? CheckSourceSettings.DEFAULT_OK_STATUS : ranges;
+    }
+    checkSettings.deleteCaptcha = deleteCaptcha;
+    checkSettings.cleanLogin = cleanLogin;
     checkSettings.normalize();
   }
 
@@ -673,6 +725,45 @@ public class MainActivity extends AppCompatActivity {
     });
     cbInfo.setOnCheckedChangeListener((b, on) -> { cbCategory.setEnabled(on); if (!on) { cbCategory.setChecked(false); cbContent.setChecked(false);} });
     cbCategory.setOnCheckedChangeListener((b, on) -> { cbContent.setEnabled(on && cbInfo.isChecked()); if (!on) cbContent.setChecked(false); });
+    MaterialSwitch cbQuickMode = v.findViewById(R.id.switchQuickMode);
+    MaterialSwitch cbQuickAccurate = v.findViewById(R.id.switchQuickAccurate);
+    MaterialCheckBox cbDiscoveryBox = v.findViewById(R.id.cbDiscovery);
+    if (cbQuickMode != null) {
+      cbQuickMode.setOnCheckedChangeListener((b, on) -> {
+        // 快速模式只跑搜索+详情，发现/目录/正文禁用；手动取消快速模式同时退出预设
+        if (cbDiscoveryBox != null) { cbDiscoveryBox.setEnabled(!on); if (on) cbDiscoveryBox.setChecked(false); }
+        cbCategory.setEnabled(!on && cbInfo.isChecked());
+        cbContent.setEnabled(!on && cbInfo.isChecked() && cbCategory.isChecked());
+        if (on) { cbCategory.setChecked(false); cbContent.setChecked(false); }
+        if (!on && cbQuickAccurate != null && cbQuickAccurate.isChecked()) {
+          cbQuickAccurate.setChecked(false);
+        }
+      });
+    }
+    if (cbQuickAccurate != null) {
+      cbQuickAccurate.setOnCheckedChangeListener((b, on) -> {
+        if (on) {
+          // 一键预设：立即把滑杆/步骤拨到预设值并锁定参数，清理开关不动
+          slider.setValue(CheckSourceSettings.QUICK_TIMEOUT_SECONDS);
+          label.setText("校验超时(秒)：" + CheckSourceSettings.QUICK_TIMEOUT_SECONDS);
+          probeSlider.setValue(CheckSourceSettings.QUICK_PROBE_ROUNDS);
+          probeLabel.setText("探测轮数：" + CheckSourceSettings.QUICK_PROBE_ROUNDS);
+          cbSearch.setChecked(true);
+          cbInfo.setChecked(true);
+          if (cbDiscoveryBox != null) { cbDiscoveryBox.setChecked(false); cbDiscoveryBox.setEnabled(false); }
+          cbCategory.setChecked(false); cbCategory.setEnabled(false);
+          cbContent.setChecked(false); cbContent.setEnabled(false);
+          if (cbQuickMode != null && !cbQuickMode.isChecked()) cbQuickMode.setChecked(true);
+        }
+        slider.setEnabled(!on);
+        probeSlider.setEnabled(!on);
+        checkConcurrencySlider.setEnabled(!on);
+        if (!on && cbQuickMode != null && cbQuickMode.isChecked()) {
+          // 退出预设 → 同时退出快速模式，恢复手动步骤选择，避免预设残留锁步骤
+          cbQuickMode.setChecked(false);
+        }
+      });
+    }
     v.findViewById(R.id.btnReset).setOnClickListener(x -> {
       checkSettings.resetToDefaults();
       deleteCaptcha = true;
@@ -696,6 +787,7 @@ public class MainActivity extends AppCompatActivity {
     checkCancelRequested = false;
     lastCheckElapsedMs = 0L;
     checkResults.clear();
+    checkIndex = CheckResultIndex.of(null);
     cardRunning.setVisibility(View.VISIBLE);
     setTaskRunning(true);
     btnStop.setText("停止校验");
@@ -725,12 +817,15 @@ public class MainActivity extends AppCompatActivity {
               setTextIfChanged(tvStatus, checkStatusLine(settings, uiCheckExtra));
               updateBackgroundTask("汇总同域最快");
             });
-            outcome = FastestUsableDedupe.apply(targets, results, settings.probeRounds, null);
+            // 「快速准确」纯排序不淘汰（speedDedupe=false）；其余模式沿用历史速度淘汰。
+            outcome = FastestUsableDedupe.apply(targets, results, settings.probeRounds, null,
+                !settings.quickAccurate);
           }
           FastestUsableDedupe.Outcome apply = outcome;
           runOnUiThread(() -> {
             stopElapsedTicker(true);
             checkResults = results;
+            checkIndex = CheckResultIndex.of(results);
             checkRunning = false;
             checkCancelRequested = false;
             checkEngine = null;
@@ -738,8 +833,10 @@ public class MainActivity extends AppCompatActivity {
             setTaskRunning(false);
             cardRunning.setVisibility(View.GONE);
             if (apply != null) applyFastestOutcome(apply);
-            onlyUsable = true;
-            switchOnlyUsable.setChecked(true);
+            // 快速准确：默认保留待复核/未通过源（用户可手动勾"仅导出探测通过"自行排除）；
+            // 其余模式维持历史行为：校验后默认仅显示探测通过源。
+            onlyUsable = !settings.quickAccurate;
+            switchOnlyUsable.setChecked(onlyUsable);
             switchOnlyUsable.setVisibility(checkResults.isEmpty() ? View.GONE : View.VISIBLE);
             renderCheckStats();
             String spent = formatElapsed(lastCheckElapsedMs);
@@ -824,6 +921,8 @@ public class MainActivity extends AppCompatActivity {
     sb.append("超时 ").append(settings.timeoutSeconds).append("s");
     sb.append(" · 并发 ").append(settings.concurrency);
     sb.append(" · 探测 ").append(settings.probeRounds).append(" 轮");
+    if (settings.quickAccurate) sb.append(" · 快速准确(网页探测)");
+    else if (settings.quickMode) sb.append(" · 快速模式(网页探测)");
     if (extra != null && !extra.trim().isEmpty()) sb.append("\n").append(extra.trim());
     return sb.toString();
   }
@@ -966,7 +1065,7 @@ public class MainActivity extends AppCompatActivity {
       row.root.setVisibility(View.VISIBLE);
       if (!checkResults.isEmpty() && n[1] > 0) {
         int pct = n[1] == 0 ? 0 : Math.round(n[0] * 100f / n[1]);
-        row.detail.setText("可用 " + n[0] + " · 共 " + n[1] + " · 通过 " + pct + "%");
+        row.detail.setText("探测可用 " + n[0] + " · 共 " + n[1] + " · 通过 " + pct + "%（规则未实测）");
         row.bar.setProgressCompat(pct, true);
       } else {
         row.detail.setText("去重后 " + total + " 条，尚未校验");
@@ -1042,9 +1141,12 @@ public class MainActivity extends AppCompatActivity {
     List<DuplicateGroup> groups = new ArrayList<DuplicateGroup>();
     for (DuplicateGroup g : result.getDuplicateGroups()) {
       String reason = g.getReason();
+      // 兼容清理历史 close 组：旧版本把"耗时接近，未淘汰"的保留源塞进 DuplicateGroup.removed，
+      // 会被 getDuplicateCount() 误算成重复。新 outcome 已不产出 close 组，这里继续剥离历史残留。
       if (reason != null && (reason.startsWith("同类型同域名仅保留") || "耗时接近，未淘汰".equals(reason))) continue;
       groups.add(g);
     }
+    // outcome.groups 仅含真正移除的组（close 参考源不再建组），直接并入，duplicate 计数不失真。
     groups.addAll(outcome.groups);
     result = new DedupeResult(result.getOriginalCount(), outcome.retained, groups, result.getInvalid());
     setStatValue(R.id.tileDup, result.getDuplicateCount());
@@ -1068,15 +1170,15 @@ public class MainActivity extends AppCompatActivity {
       SourceKind kind = SourceKind.of(s);
       int kindCount = kindCounts.get(kind) == null ? 0 : kindCounts.get(kind);
       m.put("bookSourceGroup", GroupTagger.apply(gs, kind, kindCount, date));
-      // attach check groups if any
-      for (CheckSourceResult cr : checkResults) {
-        if (cr.source.getUrl() != null && cr.source.getUrl().equals(s.getUrl()) && !cr.groups.isEmpty()) {
-          String prefix = (cr.kind == null ? SourceKind.NOVEL : cr.kind).label;
-          String cg = prefix + ":" + String.join(",", cr.groups);
-          Object comment = m.get("bookSourceComment");
-          String c = comment == null ? "" : String.valueOf(comment);
-          if (!c.contains(cg)) m.put("bookSourceComment", c.isEmpty() ? cg : c + " | " + cg);
-        }
+      // 附加该源自己的校验分组：只按 CheckResultIndex（实例身份 / URL+名称+raw 唯一指纹）
+      // 匹配——同 URL 规则不同的源不互相贴"失效/验证码"标签；无证据不标。
+      CheckSourceResult cr = checkIndex.find(s);
+      if (cr != null && !cr.groups.isEmpty()) {
+        String prefix = (cr.kind == null ? SourceKind.NOVEL : cr.kind).label;
+        String cg = prefix + ":" + String.join(",", cr.groups);
+        Object comment = m.get("bookSourceComment");
+        String c = comment == null ? "" : String.valueOf(comment);
+        if (!c.contains(cg)) m.put("bookSourceComment", c.isEmpty() ? cg : c + " | " + cg);
       }
       payload.add(m);
     }

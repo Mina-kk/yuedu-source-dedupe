@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import org.junit.Test;
@@ -51,6 +52,42 @@ public class CheckAggregatorTest {
     assertTrue(CheckAggregator.decided(10, 6, 6));
     assertTrue(CheckAggregator.decided(10, 0, 5));
     assertFalse(CheckAggregator.decided(10, 0, 4));
+  }
+
+  // ===== succeededSteps 跨轮拼凑回归 =====
+
+  @Test public void succeededStepsOnlyUnionOfSuccessRounds() {
+    // 第1轮搜索成、第2轮发现成但整轮 FAILED → 合并后 succeededSteps 只能来自 SUCCESS 轮，
+    // 不能跨轮拼凑出"搜索+发现都成功"。
+    SourceRecord s = src("源", "https://a.example");
+    CheckSourceResult r1 = round(s, CheckSourceResult.Status.FAILED, set("搜索"), 100);
+    CheckSourceResult r2 = round(s, CheckSourceResult.Status.FAILED, set("发现"), 100);
+    // 全 FAILED → 整体 FAILED，succeededSteps 应为空
+    CheckSourceResult c = CheckAggregator.combine(s, SourceKind.NOVEL, 2, Arrays.asList(r1, r2));
+    assertEquals(CheckSourceResult.Status.FAILED, c.status);
+    assertTrue(c.succeededSteps.isEmpty());
+  }
+
+  @Test public void succeededStepsUnionAcrossSuccessRounds() {
+    // 两轮都 SUCCESS 但命中步骤不同 → 并集正确（真实成功轮才计）。
+    SourceRecord s = src("源", "https://a.example");
+    CheckSourceResult r1 = round(s, CheckSourceResult.Status.SUCCESS, set("搜索", "详情"), 100);
+    CheckSourceResult r2 = round(s, CheckSourceResult.Status.SUCCESS, set("搜索", "详情", "目录"), 120);
+    CheckSourceResult c = CheckAggregator.combine(s, SourceKind.NOVEL, 2, Arrays.asList(r1, r2));
+    assertEquals(CheckSourceResult.Status.SUCCESS, c.status);
+    assertEquals(set("搜索", "详情", "目录"), c.succeededSteps);
+  }
+
+  private static java.util.Set<String> set(String... items) {
+    return new LinkedHashSet<String>(Arrays.asList(items));
+  }
+
+  private static CheckSourceResult round(SourceRecord s, CheckSourceResult.Status st,
+      java.util.Set<String> steps, long ms) {
+    return new CheckSourceResult(s, st, Collections.<String>emptyList(), "m", ms,
+        SourceKind.NOVEL, 1, st == CheckSourceResult.Status.SUCCESS ? 1 : 0,
+        st == CheckSourceResult.Status.FAILED ? 1 : 0, st == CheckSourceResult.Status.TIMEOUT ? 1 : 0,
+        ms, steps);
   }
 
   private static SourceRecord src(String name, String url) {

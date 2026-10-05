@@ -2,6 +2,17 @@
 
 用于整理、去重和校验阅读书源 JSON 的 Android 应用。
 
+## 3.0.6-md3 更新
+
+- 校验对话框功能开关统一为与主页一致的 Material 3 Switch 功能卡，顺序为：「清理需要登录的源 / 删除弹窗验证码的源 / 快速模式 / 快速准确（推荐）」；步骤和类型多选仍为复选框。
+- 新增「快速准确（推荐）」预设：默认只测搜索 + 详情、探测 3 轮、超时 60 秒。
+- 「快速准确」关闭同域淘汰，并默认保留未通过 / 待复核源（不误删）。
+- 同域速度仅作排序参考：只有 URL + 名称 + 完整规则全等（完整身份等价副本）且在手动模式下，才允许因速度淘汰。
+- 校验证据不按裸 URL 共享——同 URL 规则不同的源互不套用校验结果。
+- 启用步骤有规则但链路 URL 缺失的源记为「未覆盖」，归入「待复核」，不再计为失败。
+
+详细说明见 [docs/CHECK_SOURCE.md](docs/CHECK_SOURCE.md) 与 [docs/RELEASE_NOTES_v3.0.6-md3.md](docs/RELEASE_NOTES_v3.0.6-md3.md)。
+
 ## 3.0.5-md3 更新
 
 - 导出保留原分组，并追加 `✔年月日分类（数量）`，例如 `✔2026-8-23小说（120）`。
@@ -109,9 +120,9 @@
 APK 在 [GitHub Releases](https://github.com/Mina-kk/yuedu-source-dedupe/releases) 发布。
 
 ```text
-文件：yuedu-3.0.5-md3.apk
-大小：6,758,022 字节
-SHA-256：98cf2aad385305e7d5321b9dc8f505defea4847c2b5557ffe1fde6eb0a5b66e6
+文件：阅读书源去重-v3.0.6-md3.apk
+大小：5,550,463 字节
+SHA-256：07fdb04f0c192ae6fa524905e70569b7391d19f6dba65c4e55264c3beaca70a4
 签名证书 SHA-1：4b8fda609b4a959f0b93937b14ef42ead81fae54
 ```
 
@@ -145,7 +156,7 @@ app/build/outputs/apk/debug/app-debug.apk
 - 搜索关键词空白回退和自定义保留。
 - 书源类型判断和内容探测。
 
-最终构建中 87 项 JVM 测试全部通过。
+最终构建中 175 项 JVM 测试全部通过。
 
 ## 当前限制
 

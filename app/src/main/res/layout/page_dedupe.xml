@@ -106,6 +106,14 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="激进" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/modeName"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="名称" />
                 </com.google.android.material.button.MaterialButtonToggleGroup>
 
                 <TextView
