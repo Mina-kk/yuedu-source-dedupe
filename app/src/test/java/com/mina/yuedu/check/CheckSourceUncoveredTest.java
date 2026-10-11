@@ -124,4 +124,30 @@ public class CheckSourceUncoveredTest {
     assertEquals(CheckSourceResult.Status.FAILED, r.status);
     assertTrue(r.groups.contains("详情失效"));
   }
+
+  @Test public void unresolvedSearchTemplateIsUncoveredNotFailed() throws Exception {
+    // searchUrl 含无法解析的 {{java.ajax('x')}}（不执行 JS/表达式）：
+    // 搜索整步没跑到 → 记"搜索未覆盖"，结果 SKIPPED 待复核，不是 FAILED"搜索失效"。
+    String base = serveForever("<html><body>ok page</body></html>");
+    Map<String, Object> raw = new LinkedHashMap<>();
+    raw.put("bookSourceName", "测试源");
+    raw.put("bookSourceUrl", base);
+    raw.put("searchUrl", base + "/s?q={{java.ajax('x')}}");
+    SourceRecord s = new SourceRecord(0, "测试源", base, raw);
+    CheckSourceSettings st = new CheckSourceSettings();
+    st.probeRounds = 1;
+    st.checkSearch = true;
+    st.checkDiscovery = false;   // normalize 要求至少留一个入口，搜索本身就是入口
+    st.checkInfo = false;        // 关掉下游步骤，聚焦搜索未覆盖
+    st.checkCategory = false;
+    st.checkContent = false;
+    CheckSourceEngine engine = new CheckSourceEngine(1);
+    CheckSourceResult r = engine.checkOne(s, st);
+    engine.close();
+    assertEquals(CheckSourceResult.Status.SKIPPED, r.status);
+    assertFalse("不应判搜索失效, got=" + r.groups, r.groups.contains("搜索失效"));
+    assertFalse("不是 FAILED, got=" + r.status, r.status == CheckSourceResult.Status.FAILED);
+    assertTrue("应含搜索未覆盖, got=" + r.groups, r.groups.contains("搜索未覆盖"));
+    assertTrue("应含待复核, got=" + r.groups, r.groups.contains("待复核"));
+  }
 }

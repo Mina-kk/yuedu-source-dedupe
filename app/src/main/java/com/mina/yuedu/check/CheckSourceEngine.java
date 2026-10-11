@@ -160,7 +160,8 @@ public final class CheckSourceEngine {
     List<String> groups = new ArrayList<String>();
     // 记录本轮真实执行且命中的步骤（不使用"无失败标记"反推，避免把没跑到的步骤误计成功）
     Set<String> hitSteps = new LinkedHashSet<String>();
-    // 启用且有规则可验但链路 URL 缺失、整步没跑到的步骤（"详情"/"目录"/"正文"）——不静默放过
+    // 启用且有规则可验但链路 URL 缺失或 URL 模板含未解析变量（{{...}}）、整步没跑到的步骤
+    // （"搜索"/"发现"/"详情"/"目录"/"正文"）——不静默放过，也不误记失效
     Set<String> uncovered = new LinkedHashSet<String>();
     try {
       groups.addAll(doCheck(source, settings, kind, hitSteps, uncovered));
@@ -205,7 +206,7 @@ public final class CheckSourceEngine {
   }
 
   /** @param hitSteps 非空时，把本轮真实执行且内容命中的步骤名写入（"搜索"/"发现"/"详情"/"目录"/"正文"）。
-   *  @param uncovered 非空时，把"启用且有规则可验但链路 URL 缺失、整步没跑到"的步骤名写入。 */
+   *  @param uncovered 非空时，把"启用且有规则可验但链路 URL 缺失或 URL 模板含未解析变量、整步没跑到"的步骤名写入。 */
   private List<String> doCheck(SourceRecord source, CheckSourceSettings settings, SourceKind kind,
                                Set<String> hitSteps, Set<String> uncovered) {
     List<String> bad = new ArrayList<String>();
@@ -220,6 +221,15 @@ public final class CheckSourceEngine {
 
     Map<String, String> headers = HttpProbe.parseSourceHeader(source.rawString("header"));
     int stepTimeout = (int) Math.min(Math.max(settings.timeoutMillis() / 3L, 8000L), 30000L);
+
+    // book/上下文变量：供 AnalyzeUrlLite 替换 {{book.name}}、{{book.bookUrl}} 等。
+    // 每步把当前页面 URL 写入 baseUrl；拿到 bookUrl/tocUrl 后写入 book.bookUrl/book.tocUrl。
+    Map<String, String> vars = new HashMap<String, String>();
+    vars.put("book.name", settings.keyword);
+    vars.put("book.origin", source.getUrl());
+    vars.put("source.bookSourceUrl", source.getUrl());
+    vars.put("baseUrl", base);
+    vars.put("source.key", base);
 
     CaptchaInspect.SiteStatus site = probeSite(base, headers, Math.min(stepTimeout, 10000), settings.keyword);
     if (site == CaptchaInspect.SiteStatus.DEAD) {
@@ -241,9 +251,12 @@ public final class CheckSourceEngine {
       if (searchUrl == null || searchUrl.trim().isEmpty()) {
         bad.add("搜索链接规则为空");
       } else {
-        AnalyzeUrlLite req = AnalyzeUrlLite.parse(searchUrl, base, settings.keyword, 1);
+        AnalyzeUrlLite req = AnalyzeUrlLite.parse(searchUrl, base, settings.keyword, 1, vars);
         if (req.usesJs && (req.url == null || req.url.trim().isEmpty() || req.url.equals(base))) {
           bad.add("js失效");
+        } else if (req.unresolved) {
+          // URL 模板含未解析的 {{...}} 变量（不执行 JS/表达式）：整步没跑到，记未覆盖而非误判失效
+          if (uncovered != null) uncovered.add("搜索");
         } else {
           try {
             HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -258,7 +271,7 @@ public final class CheckSourceEngine {
               }
               if (!stepOk(r, settings) || !hit.ok) bad.add("搜索失效");
               else { if (hitSteps != null) hitSteps.add("搜索");
-                     if (!hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0); }
+                     if (!hit.bookUrls.isEmpty()) { bookUrl = hit.bookUrls.get(0); vars.put("book.bookUrl", bookUrl); } }
             }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "搜索失效");
@@ -273,9 +286,11 @@ public final class CheckSourceEngine {
       String explore = source.rawString("exploreUrl");
       if (explore != null && !explore.trim().isEmpty()) {
         String first = firstExploreUrl(explore);
-        AnalyzeUrlLite req = AnalyzeUrlLite.parse(first, base, settings.keyword, 1);
+        AnalyzeUrlLite req = AnalyzeUrlLite.parse(first, base, settings.keyword, 1, vars);
         if (req.usesJs && (req.url == null || req.url.isEmpty())) {
           bad.add("js失效");
+        } else if (req.unresolved) {
+          if (uncovered != null) uncovered.add("发现");
         } else {
           try {
             HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
@@ -289,7 +304,7 @@ public final class CheckSourceEngine {
               }
               if (!stepOk(r, settings) || !hit.ok) bad.add("发现失效");
               else { if (hitSteps != null) hitSteps.add("发现");
-                     if (bookUrl == null && !hit.bookUrls.isEmpty()) bookUrl = hit.bookUrls.get(0); }
+                     if (bookUrl == null && !hit.bookUrls.isEmpty()) { bookUrl = hit.bookUrls.get(0); vars.put("book.bookUrl", bookUrl); } }
             }
           } catch (Exception e) {
             bad.add(req.usesJs ? "js失效" : "发现失效");
@@ -312,7 +327,12 @@ public final class CheckSourceEngine {
         if (uncovered != null) uncovered.add("详情");
       } else {
         try {
-          AnalyzeUrlLite req = AnalyzeUrlLite.parse(bookUrl, base, settings.keyword, 1);
+          if (bookUrl != null) vars.put("book.bookUrl", bookUrl);
+          vars.put("baseUrl", bookUrl);
+          AnalyzeUrlLite req = AnalyzeUrlLite.parse(bookUrl, base, settings.keyword, 1, vars);
+          if (req.unresolved) {
+            if (uncovered != null) uncovered.add("详情");
+          } else {
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
           if (CaptchaInspect.isCaptcha(r.body)) {
             bad.add(CaptchaInspect.GROUP);
@@ -327,13 +347,21 @@ public final class CheckSourceEngine {
           else {
             if (hitSteps != null) hitSteps.add("详情");
             if (!hit.bookUrls.isEmpty()) tocUrl = hit.bookUrls.get(0);
+            String infoPageUrl = r.finalUrl != null ? r.finalUrl : bookUrl;
+            vars.put("baseUrl", infoPageUrl);
             String initToc = ResultInspect.ruleString(ruleInfo, "tocUrl");
-            if (initToc != null && !initToc.trim().isEmpty() && !initToc.contains("@js") && !initToc.contains("<js>")) {
-              AnalyzeUrlLite tocReq = AnalyzeUrlLite.parse(initToc, r.finalUrl != null ? r.finalUrl : bookUrl, settings.keyword, 1);
-              tocUrl = tocReq.url;
+            if (initToc != null && !initToc.trim().isEmpty() && !initToc.contains("@js") && !initToc.contains("<js>")
+                && AnalyzeUrlLite.looksLikeUrlTemplate(initToc)) {
+              // 仅当 tocUrl 规则像 URL 模板时才拼 URL；.read@href、//a/@href 这类 CSS/XPath
+              // 提取规则不在此拼地址（拼出来的是垃圾 URL，会误判目录失效）。
+              AnalyzeUrlLite tocReq = AnalyzeUrlLite.parse(initToc, infoPageUrl, settings.keyword, 1, vars);
+              if (!tocReq.unresolved) tocUrl = tocReq.url;
+              else if (tocUrl == null) tocUrl = infoPageUrl;
             } else if (tocUrl == null) {
-              tocUrl = r.finalUrl != null ? r.finalUrl : bookUrl;
+              tocUrl = infoPageUrl;
             }
+            if (tocUrl != null) vars.put("book.tocUrl", tocUrl);
+          }
           }
         } catch (Exception e) {
           bad.add("详情失效");
@@ -350,7 +378,11 @@ public final class CheckSourceEngine {
         if (uncovered != null) uncovered.add("目录");
       } else {
         try {
-          AnalyzeUrlLite req = AnalyzeUrlLite.parse(tocUrl, base, settings.keyword, 1);
+          vars.put("baseUrl", tocUrl);
+          AnalyzeUrlLite req = AnalyzeUrlLite.parse(tocUrl, base, settings.keyword, 1, vars);
+          if (req.unresolved) {
+            if (uncovered != null) uncovered.add("目录");
+          } else {
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
           if (CaptchaInspect.isCaptcha(r.body)) {
             bad.add(CaptchaInspect.GROUP);
@@ -364,6 +396,7 @@ public final class CheckSourceEngine {
           if (!stepOk(r, settings) || !hit.ok) bad.add("目录失效");
           else { if (hitSteps != null) hitSteps.add("目录");
                  if (!hit.bookUrls.isEmpty()) chapterUrl = hit.bookUrls.get(0); }
+          }
         } catch (Exception e) {
           bad.add("目录失效");
         }
@@ -380,7 +413,11 @@ public final class CheckSourceEngine {
         if (uncovered != null) uncovered.add("正文");
       } else {
         try {
-          AnalyzeUrlLite req = AnalyzeUrlLite.parse(chapterUrl, base, settings.keyword, 1);
+          vars.put("baseUrl", chapterUrl);
+          AnalyzeUrlLite req = AnalyzeUrlLite.parse(chapterUrl, base, settings.keyword, 1, vars);
+          if (req.unresolved) {
+            if (uncovered != null) uncovered.add("正文");
+          } else {
           HttpProbe.Response r = HttpProbe.fetch(req, headers, stepTimeout);
           if (CaptchaInspect.isCaptcha(r.body)) {
             bad.add(CaptchaInspect.GROUP);
@@ -392,6 +429,7 @@ public final class CheckSourceEngine {
             }
             if (!stepOk(r, settings) || !hit.ok) bad.add(contentFail);
             else if (hitSteps != null) hitSteps.add("正文");
+          }
           }
         } catch (Exception e) {
           bad.add(contentFail);

@@ -8,8 +8,8 @@ android {
         applicationId = "com.mina.yuedu"
         minSdk = 24
         targetSdk = 35
-        versionCode = 308
-        versionName = "3.0.6-md3"
+        versionCode = 309
+        versionName = "3.0.7-md3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {

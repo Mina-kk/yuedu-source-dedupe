@@ -2,6 +2,15 @@
 
 用于整理、去重和校验阅读书源 JSON 的 Android 应用。
 
+## 3.0.7-md3 更新
+
+- 校验支持 `book` 变量：URL 模板里的 `{{book.name}}`、`{{book.author}}`、`{{book.bookUrl}}`、`{{book.tocUrl}}`、`{{book.origin}}`、`{{baseUrl}}`、`{{source.bookSourceUrl}}`、`{{source.key}}` 会按校验链路（搜索关键词 → 书籍页 → 目录页）实时填入，不再把带占位符的地址原样请求后误判失效。
+- 常见模板表达式就地求值：`{{ key }}` / `{{ page }}`（带空格）、`{{(page-1)*20}}` 等纯算术、`{{java.encodeURI(key)}}` / `{{java.encodeURI(key,"gbk")}}` / `encodeURIComponent(key)`。算术用内置小解析器求值，不执行脚本。
+- 仍解析不了的 `{{...}}` 不再发请求，该步记「未覆盖」并归入「待复核」，不计失败、不误删。
+- 详情页 `tocUrl` 是 `.read@href`、`//a/@href` 这类提取规则时不再被拼成地址，避免误判目录失效。
+
+详细说明见 [docs/RELEASE_NOTES_v3.0.7-md3.md](docs/RELEASE_NOTES_v3.0.7-md3.md)。
+
 ## 3.0.6-md3 更新
 
 - 校验对话框功能开关统一为与主页一致的 Material 3 Switch 功能卡，顺序为：「清理需要登录的源 / 删除弹窗验证码的源 / 快速模式 / 快速准确（推荐）」；步骤和类型多选仍为复选框。
@@ -120,9 +129,9 @@
 APK 在 [GitHub Releases](https://github.com/Mina-kk/yuedu-source-dedupe/releases) 发布。
 
 ```text
-文件：阅读书源去重-v3.0.6-md3.apk
+文件：阅读书源去重-v3.0.7-md3.apk
 大小：5,550,463 字节
-SHA-256：07fdb04f0c192ae6fa524905e70569b7391d19f6dba65c4e55264c3beaca70a4
+SHA-256：dd04c1cf72228313568aaf5b2501be10ab3bc4ade98228948d0480cfc5f9ab0d
 签名证书 SHA-1：4b8fda609b4a959f0b93937b14ef42ead81fae54
 ```
 
@@ -155,8 +164,9 @@ app/build/outputs/apk/debug/app-debug.apk
 - 解析地址拆分、JSON 去包裹、同域排队和瞬时失败重试。
 - 搜索关键词空白回退和自定义保留。
 - 书源类型判断和内容探测。
+- book / 上下文变量与模板表达式解析，未解析模板记未覆盖。
 
-最终构建中 175 项 JVM 测试全部通过。
+最终构建中 201 项 JVM 测试全部通过。
 
 ## 当前限制
 
